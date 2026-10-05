@@ -6,6 +6,13 @@ import {
 
 export const runtime = "nodejs";
 
+function describeError(error) {
+  return {
+    code: typeof error?.code === "string" ? error.code : "unknown",
+    message: typeof error?.message === "string" ? error.message : "Unknown server error.",
+  };
+}
+
 export async function GET() {
   try {
     const { db } = getAdminServices();
@@ -26,7 +33,9 @@ export async function GET() {
       { available },
       { headers: { "Cache-Control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    const details = describeError(error);
+    console.error("Initial Admin setup status check failed:", details);
     return Response.json(
       {
         error:
@@ -117,21 +126,23 @@ export async function POST(request) {
   } catch (error) {
     if (createdUid) await auth?.deleteUser(createdUid).catch(() => {});
     if (reserved) await bootstrapRef?.delete().catch(() => {});
+    const details = describeError(error);
+    console.error("Initial Admin signup failed:", details);
     const status =
-      error.code === "auth/email-already-exists"
+      details.code === "auth/email-already-exists"
         ? 409
-        : error.message.includes("signup is closed")
+        : details.message.toLowerCase().includes("signup is closed")
           ? 403
           : 400;
     const configurationError =
       !auth ||
-      error.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON") ||
-      error.message.includes("GOOGLE_APPLICATION_CREDENTIALS");
+      details.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON") ||
+      details.message.includes("GOOGLE_APPLICATION_CREDENTIALS");
     return Response.json(
       {
         error: configurationError
           ? "Firebase server configuration is unavailable."
-          : error.message || "Could not create the initial Admin account.",
+          : details.message || "Could not create the initial Admin account.",
       },
       { status: configurationError ? 503 : status },
     );
