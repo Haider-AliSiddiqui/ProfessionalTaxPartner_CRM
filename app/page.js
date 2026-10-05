@@ -56,8 +56,8 @@ function LiveOverview({ clients, isLoading }) {
 }
 
 function downloadExcelRecords(records) {
-  const headers = ["S.NO", "Date", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
-  const rows = records.map((client, index) => [index + 1, client.date || "", client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
+  const headers = ["S.NO", "Date", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Description", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
+  const rows = records.map((client, index) => [index + 1, client.date || "", client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.description || "", client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
   const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -125,7 +125,7 @@ function AuthScreen({ onAuthenticated }) {
   return <main className="auth-shell"><section className="auth-visual"><div className="auth-brand"><div className="brand-mark">PTP</div><span>Professional Tax Partner</span></div><div className="auth-visual-content"><p className="eyebrow">Private operations workspace</p><h1>Clarity for every<br /><em>client decision.</em></h1><p>One secure place to manage tax work, assignments, payments, and your team.</p><div className="auth-proof"><div className="proof-avatars"><span>AK</span><span>MS</span><span>SA</span><b>+12</b></div><div><strong>Trusted by your team</strong><small>Secure role-based access</small></div></div></div><div className="auth-visual-footer"><span>© 2026 Professional Tax Partner</span><span><i /> Systems operational</span></div></section><section className="auth-panel"><div className="auth-card"><div className="mobile-auth-brand"><div className="brand-mark">PTP</div><strong>Professional Tax Partner</strong></div><div className="auth-heading"><span className="auth-kicker">ADMIN ACCESS ONLY</span><h2>{mode === "login" ? "Welcome back" : "Create admin account"}</h2><p>{mode === "login" ? "Sign in to manage your consultancy workspace." : "Set up the administrator account for your workspace."}</p></div><div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Sign in</button><button className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Sign up</button></div><form className="auth-form" onSubmit={submitAuth}>{mode === "signup" && <label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Adnan Khan" /></label>}<label>Admin email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="admin@ptpconsultant.pk" /></label><label>Password<input required type="password" minLength={6} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Enter your password" /></label>{mode === "signup" && <label>Confirm password<input required type="password" minLength={6} value={form.confirmPassword} onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })} placeholder="Repeat your password" /></label>}{error && <div className="auth-error">{error}</div>}<button type="submit" className="auth-submit">{mode === "login" ? "Sign in to workspace" : "Create admin account"}<Icon name="arrow" size={16} /></button></form><div className="auth-security"><Icon name="shield" size={16} /><span><strong>Admin-only workspace</strong><small>Employee accounts are created from inside the Admin portal.</small></span></div>{mode === "login" && <p className="demo-login">Demo: <strong>admin@ptpconsultant.pk</strong> / <strong>Admin@123</strong></p>}</div></section></main>;
 }
 
-function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview }) {
+function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -164,9 +164,9 @@ function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Pending</th><th>Received</th><th /></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Pending</th><th>Received</th><th /></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td>{!readOnlyPreview && (role === "Admin" || client.assignedBy === currentUid) && <details className="client-action-menu"><summary className="row-more" aria-label={`Actions for ${client.name}`}>•••</summary><button type="button" onClick={() => onEditClient(client)}>Edit client</button></details>}</td></tr>)}</tbody></table></div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
-      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td>{client.date || "29 Sep 2026"}</td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
+      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td>{client.date || "29 Sep 2026"}</td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
       {section === "Reports" && <div className="empty-workspace"><div className="workspace-icon"><Icon name="chart" size={24} /></div><h3>Authorized operations report</h3><p>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received.</p><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>}
       {((section === "Employees" && filteredEmployees.length === 0) || (section === "Clients" && filteredClients.length === 0) || (section === "Services" && filteredServices.length === 0)) && <div className="empty-state">No authorized {section.toLowerCase()} match this search.</div>}
@@ -193,7 +193,8 @@ export function CrmWorkspace({ initialSession }) {
   const [modal, setModal] = useState(null);
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
-  const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", assignedTo: "", amount: "", received: "" });
+  const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "" });
+  const [clientEditForm, setClientEditForm] = useState({ id: "", date: "", name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", totalAmount: "", totalReceived: "" });
   const [paymentForm, setPaymentForm] = useState({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10) });
   const [serviceForm, setServiceForm] = useState({ name: "", category: "" });
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
@@ -363,13 +364,14 @@ export function CrmWorkspace({ initialSession }) {
         password: clientForm.password,
         email: clientForm.email.trim(),
         work: clientForm.work.trim(),
+        description: clientForm.description.trim(),
         initials: clientForm.name.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
         status: "Pending",
         totalAmount: total,
         totalReceived: received,
         color: "mint",
       });
-      setClientForm({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", assignedTo: "", amount: "", received: "" });
+      setClientForm({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "" });
       setModal(null);
       setActiveNav("Clients");
       if (activeNav === "Clients") {
@@ -377,6 +379,42 @@ export function CrmWorkspace({ initialSession }) {
       }
     } catch (error) {
       setDataError(`Could not save client to Firebase: ${error.message}`);
+    } finally {
+      submitLock.current = false;
+      setSavingAction(null);
+    }
+  };
+  const openClientEdit = (client) => {
+    setClientEditForm({
+      id: client.id,
+      date: client.date || new Date().toISOString().slice(0, 10),
+      name: client.name || "",
+      provider: client.provider || "",
+      cell: client.cell || "",
+      cnic: client.cnic || "",
+      pin: client.pin || "",
+      password: client.password || "",
+      email: client.email || "",
+      work: client.work || "",
+      description: client.description || "",
+      totalAmount: String(client.amount || 0),
+      totalReceived: String(client.received || 0),
+    });
+    setModal("edit-client");
+  };
+  const submitClientEdit = async (event) => {
+    event.preventDefault();
+    if (submitLock.current) return;
+    submitLock.current = true;
+    setSavingAction("edit-client");
+    setDataError("");
+    try {
+      await requestApi("/api/clients", "PATCH", { ...clientEditForm, clientId: clientEditForm.id, action: "edit" });
+      setModal(null);
+      setActiveNav("Clients");
+      refreshRecords(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
+    } catch (error) {
+      setDataError(`Could not update client: ${error.message}`);
     } finally {
       submitLock.current = false;
       setSavingAction(null);
@@ -562,7 +600,7 @@ export function CrmWorkspace({ initialSession }) {
 
           {activeNav === "Overview" ? <>
           <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th /></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell">{client.date}</td><td><button className="row-more">•••</button></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}>
@@ -579,12 +617,29 @@ export function CrmWorkspace({ initialSession }) {
               <PasswordField label="Password" name="password" value={clientForm.password} onChange={(event) => setClientForm({ ...clientForm, password: event.target.value })} placeholder="Client password" minLength={6} autoComplete="new-password" />
               <label>Email<input required type="email" value={clientForm.email} onChange={(event) => setClientForm({ ...clientForm, email: event.target.value })} placeholder="client@email.com" /></label>
               <label>Work<input required value={clientForm.work} onChange={(event) => setClientForm({ ...clientForm, work: event.target.value })} placeholder="e.g. NTN Registration" /></label>
+              <label className="description-field">Description (optional)<textarea value={clientForm.description} onChange={(event) => setClientForm({ ...clientForm, description: event.target.value })} placeholder="Client requirements or notes" rows={3} /></label>
               <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{employeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
               <label>Total amount<input required type="number" min="0" value={clientForm.amount} onChange={(event) => setClientForm({ ...clientForm, amount: event.target.value })} placeholder="100000" /></label>
               <label>Received amount<input type="number" min="0" value={clientForm.received} onChange={(event) => setClientForm({ ...clientForm, received: event.target.value })} placeholder="0" /></label>
             </div>
             <p className="form-note"><Icon name="shield" size={14} /> Remaining amount is calculated automatically. Client access will be scoped to the assigned employee.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "client" ? "Saving..." : "Create client"}</button></div>
+          </form> : modal === "edit-client" ? <form onSubmit={submitClientEdit}>
+            <div className="form-grid client-form-grid">
+              <label>Date<input required type="date" value={clientEditForm.date} onChange={(event) => setClientEditForm({ ...clientEditForm, date: event.target.value })} /></label>
+              <label>Client name<input required value={clientEditForm.name} onChange={(event) => setClientEditForm({ ...clientEditForm, name: event.target.value })} /></label>
+              <label>Client provider<input required value={clientEditForm.provider} onChange={(event) => setClientEditForm({ ...clientEditForm, provider: event.target.value })} /></label>
+              <label>Cell<input value={clientEditForm.cell} onChange={(event) => setClientEditForm({ ...clientEditForm, cell: event.target.value })} /></label>
+              <label>CNIC<input value={clientEditForm.cnic} onChange={(event) => setClientEditForm({ ...clientEditForm, cnic: event.target.value })} /></label>
+              <label>PIN<input value={clientEditForm.pin} onChange={(event) => setClientEditForm({ ...clientEditForm, pin: event.target.value })} /></label>
+              <PasswordField label="Client password" name="client-password" value={clientEditForm.password} onChange={(event) => setClientEditForm({ ...clientEditForm, password: event.target.value })} minLength={0} required={false} />
+              <label>Email<input type="email" value={clientEditForm.email} onChange={(event) => setClientEditForm({ ...clientEditForm, email: event.target.value })} /></label>
+              <label>Work<input value={clientEditForm.work} onChange={(event) => setClientEditForm({ ...clientEditForm, work: event.target.value })} /></label>
+              <label>Total amount<input required type="number" min="0" value={clientEditForm.totalAmount} onChange={(event) => setClientEditForm({ ...clientEditForm, totalAmount: event.target.value })} /></label>
+              <label>Received amount<input required type="number" min="0" value={clientEditForm.totalReceived} onChange={(event) => setClientEditForm({ ...clientEditForm, totalReceived: event.target.value })} /></label>
+              <label className="description-field">Description (optional)<textarea value={clientEditForm.description} onChange={(event) => setClientEditForm({ ...clientEditForm, description: event.target.value })} rows={3} /></label>
+            </div>
+            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "edit-client" ? "Saving..." : "Save changes"}</button></div>
           </form> : modal === "employee" ? <form onSubmit={submitEmployee}>
             <div className="form-grid">
               <label>Full name<input name="name" required placeholder="e.g. Hira Malik" /></label>

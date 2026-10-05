@@ -14,7 +14,7 @@ const firebaseConfig = {
   storageBucket: "ptp-crm-website-b9ed8.firebasestorage.app",
   messagingSenderId: "766246286551",
   appId: "1:766246286551:web:533790adc4b860003dec92",
-  measurementId: "G-9G4M6GKS79"
+  measurementId: "G-9G4M6GKS79",
 };
 
 // Initialize Firebase

@@ -116,7 +116,7 @@ export async function POST(request) {
     const clientRef = caller.db.collection("clients").doc();
     const initialPaymentRef = received > 0 ? caller.db.collection("payments").doc() : null;
     const clientRecord = {
-      ...Object.fromEntries(["date", "cell", "cnic", "pin", "password", "email", "work", "initials", "color", "paymentDate"].filter((key) => body[key] !== undefined).map((key) => [key, body[key]])),
+      ...Object.fromEntries(["date", "cell", "cnic", "pin", "password", "email", "work", "description", "initials", "color", "paymentDate"].filter((key) => body[key] !== undefined).map((key) => [key, body[key]])),
       name: name.trim(),
       provider: provider.trim(),
       assignedTo,
@@ -177,6 +177,70 @@ export async function PATCH(request) {
   try {
     const body = await request.json();
     const { clientId, assignedTo, status } = body;
+    if (body.action === "edit") {
+      if (!clientId) return jsonError("Client ID is required.");
+      const name = String(body.name || "").trim();
+      const provider = String(body.provider || "").trim();
+      if (!name || !provider) return jsonError("Client name and provider are required.");
+
+      const cnic = String(body.cnic || "").trim();
+      const email = String(body.email || "").trim().toLowerCase();
+      const duplicateChecks = [
+        cnic ? caller.db.collection("clients").where("cnic", "==", cnic).get() : null,
+        email ? caller.db.collection("clients").where("email", "==", email).get() : null,
+      ].filter(Boolean);
+      const duplicateSnapshots = await Promise.all(duplicateChecks);
+      if (duplicateSnapshots.some((snapshot) => snapshot.docs.some((record) => record.id !== clientId))) {
+        return jsonError("Another client already uses this CNIC or email.", 409);
+      }
+
+      const totalAmount = Number(body.totalAmount);
+      const totalReceived = Number(body.totalReceived);
+      if (!Number.isFinite(totalAmount) || !Number.isFinite(totalReceived) || totalAmount < 0 || totalReceived < 0 || totalReceived > totalAmount) {
+        return jsonError("Payment amounts must be non-negative, and received cannot exceed total.");
+      }
+      if (body.date && !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) return jsonError("Client date must use YYYY-MM-DD format.");
+
+      const clientRef = caller.db.collection("clients").doc(clientId);
+      let updatedClient;
+      await caller.db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(clientRef);
+        if (!snapshot.exists) throw new Error("Client not found.");
+        const client = snapshot.data();
+        if (caller.profile.role !== "admin" && client.assignedBy !== caller.uid) {
+          throw new Error("You are not authorized to edit this client; only its assigner can edit it.");
+        }
+
+        const paymentStatus = totalReceived >= totalAmount && totalAmount > 0
+          ? "Received"
+          : totalReceived > 0
+            ? "Partial"
+            : "Pending";
+        updatedClient = {
+          date: body.date || client.date || "",
+          name,
+          provider,
+          cell: String(body.cell || "").trim(),
+          cnic,
+          pin: String(body.pin || "").trim(),
+          password: String(body.password || ""),
+          email,
+          work: String(body.work || "").trim(),
+          description: String(body.description || "").trim(),
+          amount: totalAmount,
+          totalAmount,
+          received: totalReceived,
+          totalReceived,
+          remaining: totalAmount - totalReceived,
+          payment: paymentStatus,
+          paymentStatus,
+          updatedBy: caller.uid,
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        transaction.update(clientRef, updatedClient);
+      });
+      return Response.json({ clientId, ...updatedClient, updatedAt: null });
+    }
     if (status !== undefined) {
       if (!clientId || !["New", "Pending", "In Progress", "Completed", "Cancelled"].includes(status)) return jsonError("Client and valid work status are required.");
       const managedProfiles = caller.profile.role === "admin"

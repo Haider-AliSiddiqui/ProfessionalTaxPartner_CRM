@@ -25,7 +25,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 The server routes verify Firebase ID tokens, read the caller's Firestore profile, and enforce role hierarchy before employee or client-assignment writes. Portal pages also verify an httpOnly session cookie and the profile's active status. Firestore client access is restricted to the active assignee, that employee's management chain, and Admin; user profiles cannot be listed or changed from the browser SDK.
 
-Keep the service-account JSON private and rotate it if it is exposed. Existing employee records must be migrated into `users/{uid}` with `uid`, `role`, `status`, `createdBy`, and `permissions`; client records need an `assignedTo` Firebase UID for non-Admin access.
+Keep the service-account JSON private and rotate it if it is exposed. Existing employee records must be migrated into `users/{uid}` with `uid`, `role`, `status`, `createdBy`, and `permissions`. Set `managerUid` to the reporting manager's UID to define team visibility; legacy profiles without `managerUid` use `createdBy` as a fallback. `createdBy` remains the creator audit field. Client records need an `assignedTo` Firebase UID for non-Admin access.
 
 The public entry point redirects to `/login`; protected role portals are served at `/admin/dashboard`, `/sub-admin/dashboard`, `/senior-technical/dashboard`, and `/jn-technical/dashboard`.
 

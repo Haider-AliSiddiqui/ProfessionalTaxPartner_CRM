@@ -15,6 +15,30 @@ const employeePermissions = ["manage_employees", "manage_permissions", "manage_l
 const labels = { admin: "Admin", sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
 const rolePath = { admin: "admin", sub_admin: "sub-admin", senior_technical: "senior-technical", jn_technical: "jn-technical" };
 
+function PasswordField({ label, value, onChange, minLength = 8, required = true, autoComplete }) {
+  const [showPassword, setShowPassword] = useState(false);
+
+  return (
+    <label>
+      {label}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #dfe3ea", borderRadius: 10, background: "#fff", padding: "0 10px" }}>
+        <input
+          type={showPassword ? "text" : "password"}
+          minLength={minLength}
+          required={required}
+          autoComplete={autoComplete}
+          value={value}
+          onChange={onChange}
+          style={{ border: "none", outline: "none", background: "transparent", flex: 1, padding: "12px 0" }}
+        />
+        <button type="button" onClick={() => setShowPassword((current) => !current)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "#374151", fontSize: 14, fontWeight: 600, padding: 0 }}>
+          {showPassword ? "Hide" : "Show"}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 export default function PortalDashboard({ session }) {
   const router = useRouter();
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -78,30 +102,6 @@ export default function PortalDashboard({ session }) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Request was rejected.");
     return result;
-  }
-
-  function PasswordField({ label, value, onChange, minLength = 8, required = true, autoComplete }) {
-    const [showPassword, setShowPassword] = useState(false);
-
-    return (
-      <label>
-        {label}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #dfe3ea", borderRadius: 10, background: "#fff", padding: "0 10px" }}>
-          <input
-            type={showPassword ? "text" : "password"}
-            minLength={minLength}
-            required={required}
-            autoComplete={autoComplete}
-            value={value}
-            onChange={onChange}
-            style={{ border: "none", outline: "none", background: "transparent", flex: 1, padding: "12px 0" }}
-          />
-          <button type="button" onClick={() => setShowPassword((current) => !current)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "#374151", fontSize: 14, fontWeight: 600, padding: 0 }}>
-            {showPassword ? "Hide" : "Show"}
-          </button>
-        </div>
-      </label>
-    );
   }
 
   async function createEmployee(event) {
