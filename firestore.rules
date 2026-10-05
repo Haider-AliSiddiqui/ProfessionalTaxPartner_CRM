@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function activeUser(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && get(/databases/$(database)/documents/users/$(uid)).data.status == 'active';
+    }
+
+    function roleOf(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.role;
+    }
+
+    function roleRank(role) {
+      return role == 'admin' ? 0
+        : role == 'sub_admin' ? 1
+        : role == 'senior_technical' ? 2
+        : role == 'jn_technical' ? 3
+        : -1;
+    }
+
+    function manages(uid) {
+      let target = get(/databases/$(database)/documents/users/$(uid)).data;
+      return roleOf(request.auth.uid) == 'admin'
+        || target.createdBy == request.auth.uid
+        || (target.createdBy != null
+          && get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy == request.auth.uid)
+        || (target.createdBy != null
+          && get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy != null
+          && get(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy)).data.createdBy == request.auth.uid);
+    }
+
+    function canAccessClient(data) {
+      return signedIn() && activeUser(request.auth.uid)
+        && (roleOf(request.auth.uid) == 'admin'
+          || data.assignedTo == request.auth.uid
+          || (data.assignedTo is string
+            && roleRank(roleOf(request.auth.uid)) >= 0
+            && roleRank(roleOf(data.assignedTo)) > roleRank(roleOf(request.auth.uid))
+            && manages(data.assignedTo)));
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && activeUser(request.auth.uid) && request.auth.uid == uid;
+      allow list, create, update, delete: if false;
+    }
+
+    match /employees/{uid} {
+      allow read, write: if false;
+    }
+
+    match /clients/{clientId} {
+      allow get, list: if canAccessClient(resource.data);
+      allow create, update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
