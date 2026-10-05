@@ -20,8 +20,9 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 1. Enable Email/Password sign-in in Firebase Authentication.
 2. Create a private Firebase service-account key. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to its JSON on the server, or set `GOOGLE_APPLICATION_CREDENTIALS` to the local key-file path. The local `.env.local` uses the file-path option; save a newly rotated key at the configured path. Never use a `NEXT_PUBLIC_` variable for credentials.
-3. Publish `firestore.rules` to the Firebase project. With the Firebase CLI, run `firebase deploy --only firestore:rules` after selecting the correct project; alternatively publish the file in Firebase Console > Firestore Database > Rules.
-4. Start the app. The common login page offers Initial Admin Signup only while the authorized `users` collection is empty. Later employees are created inside a manager's portal and use the same login page.
+3. For production deployment (including Vercel), add `FIREBASE_SERVICE_ACCOUNT_JSON` in the host's server environment settings using the complete service-account JSON, then redeploy. The local `GOOGLE_APPLICATION_CREDENTIALS` Windows file path is not available on the deployment host. Optionally set `FIREBASE_PROJECT_ID` to the Firebase project ID.
+4. Publish `firestore.rules` to the Firebase project. With the Firebase CLI, run `firebase deploy --only firestore:rules` after selecting the correct project; alternatively publish the file in Firebase Console > Firestore Database > Rules.
+5. Start the app. The common login page offers Initial Admin Signup only while the authorized `users` collection is empty. Later employees are created inside a manager's portal and use the same login page.
 
 The server routes verify Firebase ID tokens, read the caller's Firestore profile, and enforce role hierarchy before employee or client-assignment writes. Portal pages also verify an httpOnly session cookie and the profile's active status. Firestore client access is restricted to the active assignee, that employee's management chain, and Admin; user profiles cannot be listed or changed from the browser SDK.
 

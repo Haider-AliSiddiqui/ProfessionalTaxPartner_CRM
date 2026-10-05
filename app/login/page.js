@@ -8,6 +8,7 @@ import {
 } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/app/lib/firebase";
+import BrandLogo from "@/app/brand-logo";
 
 const portalForRole = {
   admin: "/admin/dashboard",
@@ -79,6 +80,23 @@ function PasswordField({
   );
 }
 
+async function readApiResponse(response, fallbackMessage) {
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(
+      `${fallbackMessage} The server returned an empty response (HTTP ${response.status}). Check the deployment logs and server environment variables.`,
+    );
+  }
+
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(
+      `${fallbackMessage} The server returned a non-JSON response (HTTP ${response.status}). Check the deployed API route and server logs.`,
+    );
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [adminSignupStatus, setAdminSignupStatus] = useState("checking");
@@ -96,9 +114,15 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch("/api/auth/admin-signup", { cache: "no-store" })
+    fetch("/api/auth/admin-signup", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(12000),
+    })
       .then(async (response) => {
-        const result = await response.json();
+        const result = await readApiResponse(
+          response,
+          "Initial Admin setup status is unavailable.",
+        );
         if (!response.ok)
           throw new Error(
             result.error || "Initial Admin setup status is unavailable.",
@@ -143,13 +167,14 @@ export default function LoginPage() {
   }
 
   async function establishSession(user) {
-    const idToken = await user.getIdToken(true);
+    const idToken = await user.getIdToken();
     const response = await fetch("/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idToken }),
+      signal: AbortSignal.timeout(15000),
     });
-    const result = await response.json();
+    const result = await readApiResponse(response, "Sign-in was rejected.");
     if (!response.ok) throw new Error(result.error || "Sign-in was rejected.");
     const destination = portalForRole[result.role];
     if (!destination) throw new Error("This account has no valid CRM role.");
@@ -177,7 +202,10 @@ export default function LoginPage() {
             password: form.password,
           }),
         });
-        const result = await response.json();
+        const result = await readApiResponse(
+          response,
+          "Admin account could not be created.",
+        );
         if (!response.ok)
           throw new Error(
             result.error || "Admin account could not be created.",
@@ -205,8 +233,9 @@ export default function LoginPage() {
       }
 
       const code = requestError?.code || "";
-      const message =
-        code === "auth/invalid-credential"
+      const message = requestError?.name === "TimeoutError"
+        ? "Sign-in is taking too long. Check your connection and Firebase deployment settings, then try again."
+        : code === "auth/invalid-credential"
           ? "Incorrect password."
           : code === "auth/user-not-found"
             ? "Incorrect email or password."
@@ -226,7 +255,7 @@ export default function LoginPage() {
     <main className="auth-shell">
       <section className="auth-visual">
         <div className="auth-brand">
-          <div className="brand-mark">PTP</div>
+          <BrandLogo />
           <span>Professional Tax Partner</span>
         </div>
         <div className="auth-visual-content">
@@ -248,7 +277,7 @@ export default function LoginPage() {
       <section className="auth-panel">
         <div className="auth-card">
           <div className="mobile-auth-brand">
-            <div className="brand-mark">PTP</div>
+            <BrandLogo />
             <strong>Professional Tax Partner</strong>
           </div>
           <div className="auth-heading">

@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./lib/firebase";
+import BrandLogo from "./brand-logo";
 
 const navItems = [
   ["Overview", "grid"], ["Clients", "users"], ["Employees", "briefcase"], ["Services", "layers"], ["Payments", "wallet"], ["Reports", "chart"], ["Excel records", "file"],
@@ -28,7 +29,16 @@ function Icon({ name, size = 18 }) {
 }
 
 function formatMoney(value) {
-  return `Rs. ${(value / 1000).toFixed(value % 1000 ? 1 : 0)}k`;
+  return `Rs. ${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function ClientRowActions({ client, canManage, onEditClient, onDeleteClient }) {
+  if (!canManage) return null;
+
+  return <div className="client-row-actions">
+    <button type="button" className="text-button" onClick={() => onEditClient(client)}>Edit</button>
+    <button type="button" className="client-delete-button" onClick={() => onDeleteClient(client)}>Delete</button>
+  </div>;
 }
 
 function LiveOverview({ clients, isLoading }) {
@@ -122,10 +132,10 @@ function AuthScreen({ onAuthenticated }) {
     onAuthenticated({ name: form.name || "Adnan Khan", email, role: "Admin" });
   };
 
-  return <main className="auth-shell"><section className="auth-visual"><div className="auth-brand"><div className="brand-mark">PTP</div><span>Professional Tax Partner</span></div><div className="auth-visual-content"><p className="eyebrow">Private operations workspace</p><h1>Clarity for every<br /><em>client decision.</em></h1><p>One secure place to manage tax work, assignments, payments, and your team.</p><div className="auth-proof"><div className="proof-avatars"><span>AK</span><span>MS</span><span>SA</span><b>+12</b></div><div><strong>Trusted by your team</strong><small>Secure role-based access</small></div></div></div><div className="auth-visual-footer"><span>© 2026 Professional Tax Partner</span><span><i /> Systems operational</span></div></section><section className="auth-panel"><div className="auth-card"><div className="mobile-auth-brand"><div className="brand-mark">PTP</div><strong>Professional Tax Partner</strong></div><div className="auth-heading"><span className="auth-kicker">ADMIN ACCESS ONLY</span><h2>{mode === "login" ? "Welcome back" : "Create admin account"}</h2><p>{mode === "login" ? "Sign in to manage your consultancy workspace." : "Set up the administrator account for your workspace."}</p></div><div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Sign in</button><button className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Sign up</button></div><form className="auth-form" onSubmit={submitAuth}>{mode === "signup" && <label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Adnan Khan" /></label>}<label>Admin email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="admin@ptpconsultant.pk" /></label><label>Password<input required type="password" minLength={6} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Enter your password" /></label>{mode === "signup" && <label>Confirm password<input required type="password" minLength={6} value={form.confirmPassword} onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })} placeholder="Repeat your password" /></label>}{error && <div className="auth-error">{error}</div>}<button type="submit" className="auth-submit">{mode === "login" ? "Sign in to workspace" : "Create admin account"}<Icon name="arrow" size={16} /></button></form><div className="auth-security"><Icon name="shield" size={16} /><span><strong>Admin-only workspace</strong><small>Employee accounts are created from inside the Admin portal.</small></span></div>{mode === "login" && <p className="demo-login">Demo: <strong>admin@ptpconsultant.pk</strong> / <strong>Admin@123</strong></p>}</div></section></main>;
+  return <main className="auth-shell"><section className="auth-visual"><div className="auth-brand"><BrandLogo /><span>Professional Tax Partner</span></div><div className="auth-visual-content"><p className="eyebrow">Private operations workspace</p><h1>Clarity for every<br /><em>client decision.</em></h1><p>One secure place to manage tax work, assignments, payments, and your team.</p><div className="auth-proof"><div className="proof-avatars"><span>AK</span><span>MS</span><span>SA</span><b>+12</b></div><div><strong>Trusted by your team</strong><small>Secure role-based access</small></div></div></div><div className="auth-visual-footer"><span>© 2026 Professional Tax Partner</span><span><i /> Systems operational</span></div></section><section className="auth-panel"><div className="auth-card"><div className="mobile-auth-brand"><BrandLogo /><strong>Professional Tax Partner</strong></div><div className="auth-heading"><span className="auth-kicker">ADMIN ACCESS ONLY</span><h2>{mode === "login" ? "Welcome back" : "Create admin account"}</h2><p>{mode === "login" ? "Sign in to manage your consultancy workspace." : "Set up the administrator account for your workspace."}</p></div><div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Sign in</button><button className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Sign up</button></div><form className="auth-form" onSubmit={submitAuth}>{mode === "signup" && <label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Adnan Khan" /></label>}<label>Admin email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="admin@ptpconsultant.pk" /></label><label>Password<input required type="password" minLength={6} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Enter your password" /></label>{mode === "signup" && <label>Confirm password<input required type="password" minLength={6} value={form.confirmPassword} onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })} placeholder="Repeat your password" /></label>}{error && <div className="auth-error">{error}</div>}<button type="submit" className="auth-submit">{mode === "login" ? "Sign in to workspace" : "Create admin account"}<Icon name="arrow" size={16} /></button></form><div className="auth-security"><Icon name="shield" size={16} /><span><strong>Admin-only workspace</strong><small>Employee accounts are created from inside the Admin portal.</small></span></div>{mode === "login" && <p className="demo-login">Demo: <strong>admin@ptpconsultant.pk</strong> / <strong>Admin@123</strong></p>}</div></section></main>;
 }
 
-function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview }) {
+function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview, isAdmin }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -164,7 +174,7 @@ function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Pending</th><th>Received</th><th /></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td>{!readOnlyPreview && (role === "Admin" || client.assignedBy === currentUid) && <details className="client-action-menu"><summary className="row-more" aria-label={`Actions for ${client.name}`}>•••</summary><button type="button" onClick={() => onEditClient(client)}>Edit client</button></details>}</td></tr>)}</tbody></table></div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table></div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
       {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td>{client.date || "29 Sep 2026"}</td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
@@ -191,6 +201,7 @@ export function CrmWorkspace({ initialSession }) {
   const [isLoading, setIsLoading] = useState(true);
   const [dataError, setDataError] = useState("");
   const [modal, setModal] = useState(null);
+  const [clientToDelete, setClientToDelete] = useState(null);
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
   const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "" });
@@ -219,12 +230,21 @@ export function CrmWorkspace({ initialSession }) {
   const requestApi = useCallback(async (path, method = "GET", body, user = firebaseUser) => {
     if (!user) throw new Error("Your Firebase sign-in is not ready. Please sign in again.");
     const token = await user.getIdToken();
-    const response = await fetch(path, {
-      method,
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      cache: "no-store",
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        cache: "no-store",
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") {
+        throw new Error(`${path} timed out after 15 seconds. Check Firebase Admin deployment credentials and Firestore access.`);
+      }
+      throw error;
+    }
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Firebase request failed.");
     return result;
@@ -460,6 +480,30 @@ export function CrmWorkspace({ initialSession }) {
       setSavingAction(null);
     }
   };
+  const openClientDelete = (client) => {
+    setClientToDelete(client);
+    setModal("delete-client");
+  };
+  const deleteClient = async () => {
+    if (!clientToDelete || submitLock.current) return;
+    submitLock.current = true;
+    setSavingAction("delete-client");
+    setDataError("");
+    try {
+      await requestApi("/api/clients", "PATCH", { clientId: clientToDelete.id, action: "delete" });
+      setClientRecords((current) => current.filter((record) => record.id !== clientToDelete.id));
+      setPaymentRecords((current) => current.filter((payment) => payment.clientId !== clientToDelete.id));
+      setServiceRecords((current) => current.filter((service) => service.clientId !== clientToDelete.id));
+      setModal(null);
+      setClientToDelete(null);
+      refreshRecords(firebaseUser, activeNav).catch((error) => setDataError(`Client deleted, but records could not refresh: ${error.message}`));
+    } catch (error) {
+      setDataError(`Could not delete client: ${error.message}`);
+    } finally {
+      submitLock.current = false;
+      setSavingAction(null);
+    }
+  };
   const openEmployeeEdit = (employee) => {
     setEmployeeEditForm({ uid: employee.uid, name: employee.name, email: employee.email, phone: employee.phone, role: employee.roleCode, managerUid: employee.createdBy || session.uid });
     setModal("edit-employee");
@@ -576,7 +620,7 @@ export function CrmWorkspace({ initialSession }) {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">PTP</div><div><strong>Professional<br />Tax Partner</strong><span>Consultant CRM</span></div></div>
+        <div className="brand"><BrandLogo /><div><strong>Professional<br />Tax Partner</strong><span>Consultant CRM</span></div></div>
         <div className="workspace-label">Workspace</div>
         <nav className="nav-list" aria-label="Main navigation">
           {visibleNavItems.map(([label, icon]) => <button key={label} className={`nav-item ${activeNav === label ? "active" : ""}`} onClick={() => setActiveNav(label)}><Icon name={icon} /><span>{label}</span>{label === "Clients" && <b className="nav-count">{scope.clients.length}</b>}</button>)}
@@ -599,13 +643,13 @@ export function CrmWorkspace({ initialSession }) {
           <LiveOverview clients={scope.clients} isLoading={isLoading} />
 
           {activeNav === "Overview" ? <>
-          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th /></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell">{client.date}</td><td><button className="row-more">•••</button></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
+          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell">{client.date}</td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid)} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
-      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}>
-        <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-header"><div><p className="eyebrow">{modal === "client" ? "Client assignment" : modal === "payment" ? "Payment entry" : modal === "service" ? "Service management" : "Team access"}</p><h2 id="modal-title">{modal === "client" ? "Add new client" : modal === "employee" ? "Add new employee" : modal === "edit-employee" ? "Edit employee" : modal === "reset-employee-password" ? "Reset employee password" : modal === "service" ? "Add service" : "Record payment"}</h2></div><button className="modal-close" onClick={() => setModal(null)} aria-label="Close dialog">&times;</button></div>
+      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(null); setClientToDelete(null); } }}>
+        <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === "delete-client" ? "delete-client-description" : undefined}>
+          <div className="modal-header"><div><p className="eyebrow">{modal === "client" ? "Client assignment" : modal === "delete-client" || modal === "edit-client" ? "Client record" : modal === "payment" ? "Payment entry" : modal === "service" ? "Service management" : "Team access"}</p><h2 id="modal-title">{modal === "client" ? "Add new client" : modal === "delete-client" ? "Delete client permanently?" : modal === "employee" ? "Add new employee" : modal === "edit-client" ? "Edit client" : modal === "edit-employee" ? "Edit employee" : modal === "reset-employee-password" ? "Reset employee password" : modal === "service" ? "Add service" : "Record payment"}</h2></div><button className="modal-close" onClick={() => { setModal(null); setClientToDelete(null); }} aria-label="Close dialog">&times;</button></div>
           {modal === "client" ? <form onSubmit={submitClient}>
             <div className="form-grid client-form-grid">
               <label>Date<input required type="date" value={clientForm.date} onChange={(event) => setClientForm({ ...clientForm, date: event.target.value })} /></label>
@@ -640,7 +684,10 @@ export function CrmWorkspace({ initialSession }) {
               <label className="description-field">Description (optional)<textarea value={clientEditForm.description} onChange={(event) => setClientEditForm({ ...clientEditForm, description: event.target.value })} rows={3} /></label>
             </div>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "edit-client" ? "Saving..." : "Save changes"}</button></div>
-          </form> : modal === "employee" ? <form onSubmit={submitEmployee}>
+          </form> : modal === "delete-client" ? <div>
+            <p id="delete-client-description" className="form-note delete-warning">This will permanently delete <strong>{clientToDelete?.name}</strong>, all its payment records, and linked services. This action cannot be undone.</p>
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={savingAction !== null} onClick={() => { setModal(null); setClientToDelete(null); }}>Cancel</button><button type="button" className="danger-button" disabled={savingAction !== null} onClick={deleteClient}>{savingAction === "delete-client" ? "Deleting..." : "Delete permanently"}</button></div>
+          </div> : modal === "employee" ? <form onSubmit={submitEmployee}>
             <div className="form-grid">
               <label>Full name<input name="name" required placeholder="e.g. Hira Malik" /></label>
               <label>Email<input name="email" required type="email" placeholder="name@ptpconsultant.pk" /></label>

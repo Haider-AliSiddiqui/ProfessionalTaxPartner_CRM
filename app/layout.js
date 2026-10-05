@@ -1,4 +1,5 @@
 import { Geist, Geist_Mono } from "next/font/google";
+import logo from "./logo/logo.jpg";
 import "./globals.css";
 import "./portal.css";
 
@@ -14,7 +15,13 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "Professional Tax Partner | CRM",
-  description: "Secure operations workspace for Professional Tax Partner & Consultant",
+  description:
+    "Secure operations workspace for Professional Tax Partner & Consultant",
+  icons: {
+    icon: logo.src,
+    shortcut: logo.src,
+    apple: logo.src,
+  },
 };
 
 export default function RootLayout({ children }) {
@@ -23,7 +30,9 @@ export default function RootLayout({ children }) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   );
 }

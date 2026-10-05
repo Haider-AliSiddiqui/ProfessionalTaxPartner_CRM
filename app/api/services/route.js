@@ -50,14 +50,15 @@ export async function GET(request) {
         caller.db.collection("clients").get(),
       ]);
       const records = serviceSnapshot.docs.map((record) => ({ id: record.id, ...record.data() }));
-      return Response.json({ services: records.length ? records : clientServiceSummaries(clientSnapshot.docs.map((record) => record.data())) }, { headers: { "Cache-Control": "no-store" } });
+      const activeClients = clientSnapshot.docs.filter((record) => !record.data().archivedAt).map((record) => record.data());
+      return Response.json({ services: records.length ? records : clientServiceSummaries(activeClients) }, { headers: { "Cache-Control": "no-store" } });
     }
 
     const managedProfiles = await getManagedProfiles(caller.db, caller.uid);
     const visibleProfiles = [{ uid: caller.uid, ...caller.profile }, ...managedProfiles.filter((profile) => isRoleBelow(caller.profile.role, profile.role))];
     const visibleUids = visibleProfiles.map((profile) => profile.uid);
     const clientSnapshots = await Promise.all(visibleUids.map((uid) => caller.db.collection("clients").where("assignedTo", "==", uid).get()));
-    const visibleClients = clientSnapshots.flatMap((snapshot) => snapshot.docs.map((record) => ({ id: record.id, ...record.data() })));
+    const visibleClients = clientSnapshots.flatMap((snapshot) => snapshot.docs.filter((record) => !record.data().archivedAt).map((record) => ({ id: record.id, ...record.data() })));
     const visibleClientIds = new Set(visibleClients.map((client) => client.id));
     const serviceSnapshots = await Promise.all(visibleUids.flatMap((uid) => [
       caller.db.collection("services").where("createdBy", "==", uid).get(),
