@@ -19,14 +19,14 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import { app, auth, db } from "./firebase";
+import { app, auth, db } from "./firebase.js";
 import {
   hasPermission,
   isRoleBelow,
   normalizePhone,
   normalizeRole,
   rolePermissions,
-} from "./roles";
+} from "./roles.js";
 
 const roleOrder = ["admin", "sub_admin", "senior_technical", "jn_technical"];
 const employeeAuthAppName = "crm-employee-provisioning";
@@ -906,12 +906,12 @@ export async function createInitialAdmin({ name, email, phone, password }) {
     await runTransaction(db, async (transaction) => {
       const bootstrapSnapshot = await transaction.get(bootstrapRef);
       if (
-        !bootstrapSnapshot.exists() ||
+        bootstrapSnapshot.exists() &&
         bootstrapSnapshot.data().status !== "uninitialized"
       ) {
         throw new Error("Admin signup is closed. Ask an administrator to create your account.");
       }
-      transaction.update(bootstrapRef, {
+      transaction.set(bootstrapRef, {
         status: "initialized",
         adminUid: credential.user.uid,
         initializedAt: serverTimestamp(),
@@ -951,8 +951,16 @@ export async function getCurrentProfile(user) {
 }
 
 export async function getBootstrapStatus() {
-  const snapshot = await getDoc(doc(db, "system", "bootstrap"));
-  return snapshot.exists() && snapshot.data().status === "uninitialized";
+  try {
+    const snapshot = await getDoc(doc(db, "system", "bootstrap"));
+    if (!snapshot.exists()) {
+      return "available";
+    }
+    return snapshot.data()?.status === "uninitialized" ? "available" : "closed";
+  } catch (error) {
+    console.error("Could not check bootstrap status:", error);
+    return "unavailable";
+  }
 }
 
 export async function removeCurrentSession() {

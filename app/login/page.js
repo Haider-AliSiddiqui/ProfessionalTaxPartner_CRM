@@ -102,9 +102,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     getBootstrapStatus()
-      .then((available) =>
-        setAdminSignupStatus(available ? "available" : "closed"),
-      )
+      .then(setAdminSignupStatus)
       .catch(() => setAdminSignupStatus("unavailable"));
   }, []);
 
@@ -157,8 +155,11 @@ export default function LoginPage() {
     try {
       let credential;
       if (mode === "signup") {
-        if (adminSignupStatus !== "available")
-          throw new Error("Initial Admin signup is closed.");
+        if (adminSignupStatus !== "available") {
+          throw new Error(
+            "Initial Admin signup is closed. Sign in with the existing Admin account.",
+          );
+        }
         if (form.password !== form.confirmPassword)
           throw new Error("Passwords do not match.");
         credential = { user: await createInitialAdmin(form) };
@@ -264,10 +265,14 @@ export default function LoginPage() {
           )}
           {adminSignupStatus === "unavailable" && (
             <p className="auth-error" role="status">
-              Initial Admin setup is unavailable. Verify Firebase client
-              configuration and seed the Firestore system/bootstrap document
-              with status &quot;uninitialized&quot; before creating the first
-              Admin.
+              Could not check Admin setup. Verify Firebase configuration and
+              Firestore Rules, then reload this page.
+            </p>
+          )}
+          {adminSignupStatus === "closed" && (
+            <p className="form-note" role="status">
+              Initial Admin setup has already been claimed. Sign in with the
+              existing Admin account; public Admin signup is disabled.
             </p>
           )}
           <form className="auth-form" onSubmit={submit}>
@@ -302,6 +307,7 @@ export default function LoginPage() {
                   type="tel"
                   required
                   autoComplete="tel"
+                  placeholder="03XXXXXXXXX"
                   value={form.phone}
                   onChange={updateField}
                 />

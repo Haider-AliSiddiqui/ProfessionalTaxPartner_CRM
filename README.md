@@ -5,7 +5,7 @@
 1. Create a Firebase web app and copy its web configuration to `.env.local` using the `NEXT_PUBLIC_FIREBASE_*` names in `.env.example`. These values are web-app configuration, not service-account credentials.
 2. Enable Email/Password authentication in Firebase Authentication.
 3. Create the Firestore database and publish [`firestore.rules`](./firestore.rules). For example, select the correct Firebase project and run `firebase deploy --only firestore:rules`, or publish the file in Firebase Console > Firestore Database > Rules.
-4. Before the first administrator signup, create `system/bootstrap` in Firestore with `{ "status": "uninitialized" }`. Keep Firestore Rules published before enabling signup. The first signup atomically claims this document and creates the Admin profile; all later signup attempts are denied by the rules.
+4. When no Admin account exists, the `/login` page automatically presents the "Create Initial Admin" signup option. The first signup creates the Admin account and atomically initializes `system/bootstrap`; all subsequent public Admin signup attempts are permanently disabled.
 5. Start the app with `npm run dev`. Employees are provisioned in the Admin portal and sign in through the same `/login` page.
 
 ## Data access and roles

@@ -279,7 +279,15 @@ service cloud.firestore {
 
     match /system/bootstrap {
       allow get: if true;
-      allow list, create, delete: if false;
+      allow list, delete: if false;
+      allow create: if signedIn()
+        && request.resource.data.status == 'initialized'
+        && request.resource.data.adminUid == request.auth.uid
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && request.resource.data.keys().hasOnly([
+          'status', 'adminUid', 'initializedAt'
+        ]);
       allow update: if signedIn()
         && resource.data.status == 'uninitialized'
         && request.resource.data.status == 'initialized'

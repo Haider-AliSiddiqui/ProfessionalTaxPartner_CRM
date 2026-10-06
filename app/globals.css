@@ -241,7 +241,13 @@ td { border-top: 1px solid #eef1ef; padding: 12px 21px; color: #687570; font-siz
 .workspace-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 18px 21px 15px; }
 .workspace-panel table { min-width: 760px; }
 .service-cell { display: flex; align-items: center; gap: 9px; color: #34403b; }
-.service-cell strong { font-size: 11px; }.service-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--teal); background: var(--mint); }.money-cell { font-weight: 700; color: #3c9d78; }.empty-workspace { text-align: center; padding: 62px 20px 70px; border-top: 1px solid #eef1ef; }.workspace-icon { width: 52px; height: 52px; margin: 0 auto 16px; display: grid; place-items: center; color: var(--teal); background: var(--mint); border-radius: 14px; }.empty-workspace h3 { margin: 0; font: 700 15px Manrope; }.empty-workspace p { max-width: 400px; color: #929d98; font-size: 11px; line-height: 1.6; margin: 9px auto 16px; }.empty-workspace p strong { color: #53615b; }
+.service-cell strong { font-size: 11px; }.service-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--teal); background: var(--mint); }
+.money-cell { font-weight: 700; color: #3c9d78; }
+.empty-workspace { text-align: center; padding: 62px 20px 70px; border-top: 1px solid #eef1ef; }
+.workspace-icon { width: 52px; height: 52px; margin: 0 auto 16px; display: grid; place-items: center; color: var(--teal); background: var(--mint); border-radius: 14px; }
+.empty-workspace h3 { margin: 0; font: 700 15px Manrope; }
+.empty-workspace p { max-width: 400px; color: #929d98; font-size: 11px; line-height: 1.6; margin: 9px auto 16px; }
+.empty-workspace p strong { color: #53615b; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #172d2a66; backdrop-filter: blur(4px); }
 .modal-card { width: min(540px, 100%); background: #fff; border-radius: 14px; padding: 25px; box-shadow: 0 20px 60px #1228242b; }
 .modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
