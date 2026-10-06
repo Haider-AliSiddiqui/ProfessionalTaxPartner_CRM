@@ -2,6 +2,23 @@ import { getAdminServices } from "@/app/lib/firebase-admin";
 
 export const runtime = "nodejs";
 
+function describeError(error) {
+  const message =
+    typeof error?.message === "string" ? error.message : "Unknown server error.";
+
+  return {
+    name: typeof error?.name === "string" ? error.name : "Error",
+    code: typeof error?.code === "string" ? error.code : "unknown",
+    message: message
+      .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[REDACTED]")
+      .replace(
+        /"(?:private_key|password|client_secret|refresh_token|access_token)"\s*:\s*"[^"]*"/gi,
+        '"[REDACTED]":"[REDACTED]"',
+      )
+      .replace(/\b(?:Bearer\s+)?eyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[REDACTED]"),
+  };
+}
+
 export async function POST(request) {
   try {
     const { idToken } = await request.json();
@@ -53,14 +70,30 @@ export async function POST(request) {
       },
     );
   } catch (error) {
-    const isAuthError = String(error.code || "").startsWith("auth/");
+    const details = describeError(error);
+    console.error("Firebase session creation failed:", details);
+    const isAuthError = details.code.startsWith("auth/");
+    const isRequestError = error instanceof SyntaxError;
+    const isFirestoreError = [
+      "5",
+      "7",
+      "14",
+      "deadline-exceeded",
+      "permission-denied",
+      "unavailable",
+    ].includes(details.code);
+    const status = isAuthError ? 401 : isRequestError ? 400 : isFirestoreError ? 503 : 500;
     return Response.json(
       {
         error: isAuthError
           ? "Firebase authentication was rejected."
-          : "Firebase server authorization is unavailable.",
+          : isRequestError
+            ? "The sign-in request could not be read."
+            : isFirestoreError
+              ? "Firebase server authorization is unavailable. Check server credentials and Firestore access."
+              : "The sign-in session could not be created because of a server error. Check the server logs.",
       },
-      { status: isAuthError ? 401 : 503 },
+      { status },
     );
   }
 }
