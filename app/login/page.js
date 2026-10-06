@@ -8,6 +8,11 @@ import {
 } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/app/lib/firebase";
+import {
+  createInitialAdmin,
+  getBootstrapStatus,
+  getCurrentProfile,
+} from "@/app/lib/crm-data";
 import BrandLogo from "@/app/brand-logo";
 
 const portalForRole = {
@@ -80,23 +85,6 @@ function PasswordField({
   );
 }
 
-async function readApiResponse(response, fallbackMessage) {
-  const body = await response.text();
-  if (!body.trim()) {
-    throw new Error(
-      `${fallbackMessage} The server returned an empty response (HTTP ${response.status}). Check the deployment logs and server environment variables.`,
-    );
-  }
-
-  try {
-    return JSON.parse(body);
-  } catch {
-    throw new Error(
-      `${fallbackMessage} The server returned a non-JSON response (HTTP ${response.status}). Check the deployed API route and server logs.`,
-    );
-  }
-}
-
 export default function LoginPage() {
   const router = useRouter();
   const [adminSignupStatus, setAdminSignupStatus] = useState("checking");
@@ -110,30 +98,14 @@ export default function LoginPage() {
   });
   const [error, setError] = useState("");
   const [resetMessage, setResetMessage] = useState("");
-  const [setupError, setSetupError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch("/api/auth/admin-signup", {
-      cache: "no-store",
-      signal: AbortSignal.timeout(12000),
-    })
-      .then(async (response) => {
-        const result = await readApiResponse(
-          response,
-          "Initial Admin setup status is unavailable.",
-        );
-        if (!response.ok)
-          throw new Error(
-            result.error || "Initial Admin setup status is unavailable.",
-          );
-        setAdminSignupStatus(result.available ? "available" : "closed");
-        setSetupError("");
-      })
-      .catch((requestError) => {
-        setAdminSignupStatus("unavailable");
-        setSetupError(requestError.message);
-      });
+    getBootstrapStatus()
+      .then((available) =>
+        setAdminSignupStatus(available ? "available" : "closed"),
+      )
+      .catch(() => setAdminSignupStatus("unavailable"));
   }, []);
 
   const updateField = (event) =>
@@ -167,16 +139,13 @@ export default function LoginPage() {
   }
 
   async function establishSession(user) {
-    const idToken = await user.getIdToken();
-    const response = await fetch("/api/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken }),
-      signal: AbortSignal.timeout(15000),
-    });
-    const result = await readApiResponse(response, "Sign-in was rejected.");
-    if (!response.ok) throw new Error(result.error || "Sign-in was rejected.");
-    const destination = portalForRole[result.role];
+    const profile = await getCurrentProfile(user);
+    if (profile.status !== "active") {
+      throw new Error(
+        "Your account has been deactivated. Please contact your administrator.",
+      );
+    }
+    const destination = portalForRole[profile.role];
     if (!destination) throw new Error("This account has no valid CRM role.");
     router.replace(destination);
   }
@@ -188,33 +157,11 @@ export default function LoginPage() {
     try {
       let credential;
       if (mode === "signup") {
-        if (adminSignupStatus === "closed")
+        if (adminSignupStatus !== "available")
           throw new Error("Initial Admin signup is closed.");
         if (form.password !== form.confirmPassword)
           throw new Error("Passwords do not match.");
-        const response = await fetch("/api/auth/admin-signup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: form.name,
-            email: form.email,
-            phone: form.phone,
-            password: form.password,
-          }),
-        });
-        const result = await readApiResponse(
-          response,
-          "Admin account could not be created.",
-        );
-        if (!response.ok)
-          throw new Error(
-            result.error || "Admin account could not be created.",
-          );
-        credential = await signInWithEmailAndPassword(
-          auth,
-          form.email.trim(),
-          form.password,
-        );
+        credential = { user: await createInitialAdmin(form) };
         setAdminSignupStatus("closed");
         setMode("login");
       } else {
@@ -226,7 +173,7 @@ export default function LoginPage() {
       }
       await establishSession(credential.user);
     } catch (requestError) {
-      await signOut(auth).catch(() => {});
+      if (auth.currentUser) await signOut(auth);
       if (requestError.message?.toLowerCase().includes("signup is closed")) {
         setAdminSignupStatus("closed");
         setMode("login");
@@ -249,7 +196,7 @@ export default function LoginPage() {
     }
   }
 
-  const canOfferSignup = adminSignupStatus !== "closed";
+  const canOfferSignup = adminSignupStatus === "available";
   const canSignup = canOfferSignup && mode === "signup";
   return (
     <main className="auth-shell">
@@ -317,10 +264,10 @@ export default function LoginPage() {
           )}
           {adminSignupStatus === "unavailable" && (
             <p className="auth-error" role="status">
-              Initial Admin setup status could not be verified. Check the
-              server-only Firebase Admin credential setting and Firestore
-              access. Signup stays visible, but account creation needs this
-              server configuration. {setupError}
+              Initial Admin setup is unavailable. Verify Firebase client
+              configuration and seed the Firestore system/bootstrap document
+              with status &quot;uninitialized&quot; before creating the first
+              Admin.
             </p>
           )}
           <form className="auth-form" onSubmit={submit}>

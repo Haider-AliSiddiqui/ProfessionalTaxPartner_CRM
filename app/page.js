@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./lib/firebase";
+import { crmRequest, sendEmployeePasswordReset } from "./lib/crm-data";
 import BrandLogo from "./brand-logo";
 
 const navItems = [
@@ -30,6 +31,10 @@ function Icon({ name, size = 18 }) {
 
 function formatMoney(value) {
   return `Rs. ${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function limitDigits(value, length) {
+  return String(value).replace(/\D/g, "").slice(0, length);
 }
 
 function ClientRowActions({ client, canManage, onEditClient, onDeleteClient }) {
@@ -104,38 +109,7 @@ function PasswordField({ label, value, onChange, placeholder, minLength = 8, nam
   );
 }
 
-function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState("login");
-  const [error, setError] = useState("");
-  const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "" });
-
-  const submitAuth = (event) => {
-    event.preventDefault();
-    setError("");
-    const email = form.email.trim().toLowerCase();
-    if (mode === "signup" && form.password !== form.confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-    if (mode === "login" && email !== "admin@ptpconsultant.pk" && !window.localStorage.getItem(`ptp-admin-${email}`)) {
-      setError("Only an authorized Admin account can access this workspace.");
-      return;
-    }
-    if (mode === "login" && form.password.length < 6) {
-      setError("Enter a valid password with at least 6 characters.");
-      return;
-    }
-    if (mode === "signup") {
-      window.localStorage.setItem(`ptp-admin-${email}`, JSON.stringify({ name: form.name, password: form.password, role: "Admin" }));
-    }
-    window.localStorage.setItem("ptp-session", JSON.stringify({ name: form.name || "Adnan Khan", email, role: "Admin" }));
-    onAuthenticated({ name: form.name || "Adnan Khan", email, role: "Admin" });
-  };
-
-  return <main className="auth-shell"><section className="auth-visual"><div className="auth-brand"><BrandLogo /><span>Professional Tax Partner</span></div><div className="auth-visual-content"><p className="eyebrow">Private operations workspace</p><h1>Clarity for every<br /><em>client decision.</em></h1><p>One secure place to manage tax work, assignments, payments, and your team.</p><div className="auth-proof"><div className="proof-avatars"><span>AK</span><span>MS</span><span>SA</span><b>+12</b></div><div><strong>Trusted by your team</strong><small>Secure role-based access</small></div></div></div><div className="auth-visual-footer"><span>© 2026 Professional Tax Partner</span><span><i /> Systems operational</span></div></section><section className="auth-panel"><div className="auth-card"><div className="mobile-auth-brand"><BrandLogo /><strong>Professional Tax Partner</strong></div><div className="auth-heading"><span className="auth-kicker">ADMIN ACCESS ONLY</span><h2>{mode === "login" ? "Welcome back" : "Create admin account"}</h2><p>{mode === "login" ? "Sign in to manage your consultancy workspace." : "Set up the administrator account for your workspace."}</p></div><div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Sign in</button><button className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Sign up</button></div><form className="auth-form" onSubmit={submitAuth}>{mode === "signup" && <label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Adnan Khan" /></label>}<label>Admin email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="admin@ptpconsultant.pk" /></label><label>Password<input required type="password" minLength={6} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Enter your password" /></label>{mode === "signup" && <label>Confirm password<input required type="password" minLength={6} value={form.confirmPassword} onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })} placeholder="Repeat your password" /></label>}{error && <div className="auth-error">{error}</div>}<button type="submit" className="auth-submit">{mode === "login" ? "Sign in to workspace" : "Create admin account"}<Icon name="arrow" size={16} /></button></form><div className="auth-security"><Icon name="shield" size={16} /><span><strong>Admin-only workspace</strong><small>Employee accounts are created from inside the Admin portal.</small></span></div>{mode === "login" && <p className="demo-login">Demo: <strong>admin@ptpconsultant.pk</strong> / <strong>Admin@123</strong></p>}</div></section></main>;
-}
-
-function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview, isAdmin }) {
+function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview, isAdmin }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -159,7 +133,7 @@ function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords
   const filteredServices = serviceRecords.filter((service) => `${service.name} ${service.category}`.toLowerCase().includes(normalizedQuery));
   const filteredPayments = paymentRecords.filter((payment) => `${payment.clientName} ${payment.date}`.toLowerCase().includes(normalizedQuery));
   const roleNames = { sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
-  const assignableEmployees = employeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role));
+  const activeAssignableEmployees = assignableEmployees.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role));
   const showAction = !readOnlyPreview && ((section === "Employees" && canManageEmployees) || (section === "Clients" && canAddClient) || (section === "Services" && canManageServices) || (section === "Payments" && clients.length > 0));
 
   return <section className="workspace-view">
@@ -167,7 +141,7 @@ function WorkspaceView({ section, role, clients, employeeRecords, serviceRecords
     <div className="workspace-summary"><div className="summary-tile"><span>Visible records</span><strong>{section === "Employees" ? filteredEmployees.length : section === "Services" ? filteredServices.length : section === "Payments" ? filteredPayments.length : filteredClients.length}</strong><small>Scoped to your access</small></div><div className="summary-tile"><span>Active {section.toLowerCase()}</span><strong>{section === "Employees" ? filteredEmployees.filter((item) => item.status === "Active").length : section === "Services" ? filteredServices.filter((item) => item.status === "Active").length : section === "Payments" ? filteredPayments.length : filteredClients.filter((item) => item.status !== "Completed").length}</strong><small>Currently in progress</small></div><div className="summary-tile"><span>Role scope</span><strong className="scope-value">{role}</strong><small><span className="secure-dot" /> Protected view</small></div></div>
     <div className="panel workspace-panel"><div className="workspace-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${section.toLowerCase()}...`} /></div><button className="filter-button">Filter <span>⌄</span></button></div>
       {section === "Clients" && !readOnlyPreview && filteredClients.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); const formData = new FormData(event.currentTarget); const client = clients.find((item) => item.id === formData.get("clientId")); if (client) onClientStatusChange(client, formData.get("status")); }}><label>Client work status<select name="clientId" required defaultValue="">{filteredClients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.work || client.provider}</option>)}</select></label><label>Status<select name="status" defaultValue="Pending">{["New", "Pending", "In Progress", "Completed", "Cancelled"].map((status) => <option key={status}>{status}</option>)}</select></label><div className="modal-actions"><button className="primary-button">Update work status</button></div></form>}
-      {section === "Clients" && !readOnlyPreview && assignableEmployees.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); const formData = new FormData(event.currentTarget); onClientTransfer(formData.get("clientId"), formData.get("assignedTo")); }}><label>Client to reassign<select name="clientId" required defaultValue="">{filteredClients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.owner}</option>)}</select></label><label>New assignee<select name="assignedTo" required defaultValue="">{assignableEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label><div className="modal-actions"><button className="primary-button">Reassign client</button></div></form>}
+      {section === "Clients" && !readOnlyPreview && activeAssignableEmployees.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); const formData = new FormData(event.currentTarget); onClientTransfer(formData.get("clientId"), formData.get("assignedTo")); }}><label>Client to reassign<select name="clientId" required defaultValue="">{filteredClients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.owner}</option>)}</select></label><label>New assignee<select name="assignedTo" required defaultValue="">{activeAssignableEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label><div className="modal-actions"><button className="primary-button">Reassign client</button></div></form>}
       {section === "Employees" && <div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Assigned clients</th><th>Account status</th><th>Created by</th>{!readOnlyPreview && <th>Actions</th>}</tr></thead><tbody>{filteredEmployees.map((employee) => <tr key={employee.uid}><td><div className="client-cell"><div className="client-avatar mint">{employee.initials}</div><div><strong>{employee.name}</strong><span>{employee.email}</span></div></div></td><td>{employee.role}</td><td>{clients.filter((client) => client.assignedTo === employee.uid).length} clients</td><td><span className={`status-badge ${employee.status === "Active" ? "completed" : "pending"}`}><i />{employee.status}</span></td><td>{employee.createdBy === currentUid ? "You" : employee.createdBy}</td>{!readOnlyPreview && <td><button className="text-button" onClick={() => onEditEmployee(employee)}>Edit</button><button className="text-button" onClick={() => onResetEmployeePassword(employee)}>Reset password</button><button className="secondary-button" onClick={() => onEmployeeStatusChange(employee, employee.status === "Active" ? "inactive" : "active")}>{employee.status === "Active" ? "Deactivate" : "Activate"}</button></td>}</tr>)}</tbody></table></div>}
       {section === "Employees" && !readOnlyPreview && canManagePermissions && filteredEmployees.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); onEmployeePermissionsChange(permissionEmployeeUid, permissionDrafts); }}>
         <label>Employee permissions<select required value={permissionEmployeeUid} onChange={(event) => { const employee = filteredEmployees.find((item) => item.uid === event.target.value); setPermissionEmployeeUid(event.target.value); setPermissionDrafts(employee?.permissions || []); }}><option value="">Choose employee</option>{filteredEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name}</option>)}</select></label>
@@ -195,6 +169,7 @@ export function CrmWorkspace({ initialSession }) {
   const [filter, setFilter] = useState("All clients");
   const [clientRecords, setClientRecords] = useState([]);
   const [employeeRecords, setEmployeeRecords] = useState([]);
+  const [assignableEmployeeRecords, setAssignableEmployeeRecords] = useState([]);
   const [serviceRecords, setServiceRecords] = useState([]);
   const [paymentRecords, setPaymentRecords] = useState([]);
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -210,7 +185,7 @@ export function CrmWorkspace({ initialSession }) {
   const [serviceForm, setServiceForm] = useState({ name: "", category: "" });
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
   const [newEmployeeRole, setNewEmployeeRole] = useState("");
-  const [passwordResetForm, setPasswordResetForm] = useState({ uid: "", password: "" });
+  const [passwordResetForm, setPasswordResetForm] = useState({ uid: "" });
   const employeeRoleOptions = ({
     admin: ["sub_admin", "senior_technical", "jn_technical"],
     sub_admin: ["senior_technical", "jn_technical"],
@@ -227,28 +202,11 @@ export function CrmWorkspace({ initialSession }) {
     return true;
   });
 
-  const requestApi = useCallback(async (path, method = "GET", body, user = firebaseUser) => {
-    if (!user) throw new Error("Your Firebase sign-in is not ready. Please sign in again.");
-    const token = await user.getIdToken();
-    let response;
-    try {
-      response = await fetch(path, {
-        method,
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        cache: "no-store",
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (error) {
-      if (error.name === "TimeoutError" || error.name === "AbortError") {
-        throw new Error(`${path} timed out after 15 seconds. Check Firebase Admin deployment credentials and Firestore access.`);
-      }
-      throw error;
-    }
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Firebase request failed.");
-    return result;
-  }, [firebaseUser]);
+  const requestApi = useCallback(
+    (path, method = "GET", body, user = firebaseUser) =>
+      crmRequest(user, path, method, body),
+    [firebaseUser],
+  );
 
   const refreshRecords = useCallback(async (user, section) => {
     try {
@@ -262,10 +220,10 @@ export function CrmWorkspace({ initialSession }) {
         "Excel records": ["clients"],
       };
       const endpoints = {
-        clients: "/api/clients",
-        employees: "/api/employees",
-        services: "/api/services",
-        payments: "/api/payments",
+        clients: "clients",
+        employees: "employees",
+        services: "services",
+        payments: "payments",
       };
       const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
         .some((permission) => session.permissions.includes(permission));
@@ -295,13 +253,17 @@ export function CrmWorkspace({ initialSession }) {
         })).sort((first, second) => String(second.date || "").localeCompare(String(first.date || ""))));
       }
       if (employeeResult) {
-        setEmployeeRecords(employeeResult.employees.map((employee) => ({
+        const formatEmployee = (employee) => ({
           ...employee,
           roleCode: employee.role,
           role: ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[employee.role] || employee.role,
           status: employee.status === "active" ? "Active" : "Inactive",
           initials: employee.name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "",
-        })));
+        });
+        setEmployeeRecords(employeeResult.employees.map(formatEmployee));
+        setAssignableEmployeeRecords(
+          (employeeResult.assignableEmployees || employeeResult.employees).map(formatEmployee),
+        );
       }
       if (serviceResult) setServiceRecords(serviceResult.services);
       if (paymentResult) setPaymentRecords(paymentResult.payments);
@@ -373,7 +335,7 @@ export function CrmWorkspace({ initialSession }) {
     const received = Number(clientForm.received) || 0;
     setDataError("");
     try {
-      await requestApi("/api/clients", "POST", {
+      await requestApi("clients", "POST", {
         assignedTo: clientForm.assignedTo,
         date: clientForm.date,
         name: clientForm.name.trim(),
@@ -410,8 +372,8 @@ export function CrmWorkspace({ initialSession }) {
       date: client.date || new Date().toISOString().slice(0, 10),
       name: client.name || "",
       provider: client.provider || "",
-      cell: client.cell || "",
-      cnic: client.cnic || "",
+      cell: limitDigits(client.cell || "", 11),
+      cnic: limitDigits(client.cnic || "", 13),
       pin: client.pin || "",
       password: client.password || "",
       email: client.email || "",
@@ -429,7 +391,7 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("edit-client");
     setDataError("");
     try {
-      await requestApi("/api/clients", "PATCH", { ...clientEditForm, clientId: clientEditForm.id, action: "edit" });
+      await requestApi("clients", "PATCH", { ...clientEditForm, clientId: clientEditForm.id, action: "edit" });
       setModal(null);
       setActiveNav("Clients");
       refreshRecords(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
@@ -449,7 +411,7 @@ export function CrmWorkspace({ initialSession }) {
     const name = formData.get("name").trim();
     setDataError("");
     try {
-      const result = await requestApi("/api/employees", "POST", {
+      const result = await requestApi("employees", "POST", {
         name,
         email: formData.get("email").trim(),
         phone: formData.get("phone").trim(),
@@ -490,7 +452,7 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("delete-client");
     setDataError("");
     try {
-      await requestApi("/api/clients", "PATCH", { clientId: clientToDelete.id, action: "delete" });
+      await requestApi("clients", "PATCH", { clientId: clientToDelete.id, action: "delete" });
       setClientRecords((current) => current.filter((record) => record.id !== clientToDelete.id));
       setPaymentRecords((current) => current.filter((payment) => payment.clientId !== clientToDelete.id));
       setServiceRecords((current) => current.filter((service) => service.clientId !== clientToDelete.id));
@@ -505,21 +467,25 @@ export function CrmWorkspace({ initialSession }) {
     }
   };
   const openEmployeeEdit = (employee) => {
-    setEmployeeEditForm({ uid: employee.uid, name: employee.name, email: employee.email, phone: employee.phone, role: employee.roleCode, managerUid: employee.createdBy || session.uid });
+    setEmployeeEditForm({ uid: employee.uid, name: employee.name, email: employee.email, phone: employee.phone, role: employee.roleCode, managerUid: employee.managerUid || employee.createdBy || session.uid });
     setModal("edit-employee");
   };
   const openEmployeePasswordReset = (employee) => {
-    setPasswordResetForm({ uid: employee.uid, password: "" });
+    setPasswordResetForm({ uid: employee.uid });
     setModal("reset-employee-password");
   };
   const submitEmployeePasswordReset = async (event) => {
     event.preventDefault();
     setDataError("");
     try {
-      await requestApi("/api/employees", "PATCH", passwordResetForm);
+      const employee = employeeRecords.find(
+        (record) => record.uid === passwordResetForm.uid,
+      );
+      if (!employee?.email) throw new Error("Employee email address is unavailable.");
+      await sendEmployeePasswordReset(employee.email);
       setModal(null);
-      setPasswordResetForm({ uid: "", password: "" });
-      setDataError("Temporary password updated. Share it with the employee securely.");
+      setPasswordResetForm({ uid: "" });
+      setDataError("Password reset email sent to the employee.");
     } catch (error) {
       setDataError(`Could not reset employee password: ${error.message}`);
     }
@@ -529,7 +495,8 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       const { uid, ...updates } = employeeEditForm;
-      await requestApi("/api/employees", "PATCH", { uid, ...updates });
+      delete updates.email;
+      await requestApi("employees", "PATCH", { uid, ...updates });
       await refreshRecords(firebaseUser, "Employees");
       setModal(null);
     } catch (error) {
@@ -539,7 +506,7 @@ export function CrmWorkspace({ initialSession }) {
   const updateEmployeeStatus = async (employee, status) => {
     setDataError("");
     try {
-      await requestApi("/api/employees", "PATCH", { uid: employee.uid, status });
+      await requestApi("employees", "PATCH", { uid: employee.uid, status });
       await refreshRecords(firebaseUser, "Employees");
     } catch (error) {
       setDataError(`Could not update employee status: ${error.message}`);
@@ -548,7 +515,7 @@ export function CrmWorkspace({ initialSession }) {
   const updateEmployeePermissions = async (uid, permissions) => {
     setDataError("");
     try {
-      await requestApi("/api/employees", "PATCH", { uid, permissions });
+      await requestApi("employees", "PATCH", { uid, permissions });
       await refreshRecords(firebaseUser, "Employees");
     } catch (error) {
       setDataError(`Could not update employee permissions: ${error.message}`);
@@ -557,7 +524,7 @@ export function CrmWorkspace({ initialSession }) {
   const updateClientStatus = async (client, status) => {
     setDataError("");
     try {
-      await requestApi("/api/clients", "PATCH", { clientId: client.id, status });
+      await requestApi("clients", "PATCH", { clientId: client.id, status });
       await refreshRecords(firebaseUser, "Clients");
     } catch (error) {
       setDataError(`Could not update work status: ${error.message}`);
@@ -566,7 +533,7 @@ export function CrmWorkspace({ initialSession }) {
   const transferClient = async (clientId, assignedTo) => {
     setDataError("");
     try {
-      await requestApi("/api/clients", "PATCH", { clientId, assignedTo });
+      await requestApi("clients", "PATCH", { clientId, assignedTo });
       await refreshRecords(firebaseUser, "Clients");
     } catch (error) {
       setDataError(`Could not reassign client: ${error.message}`);
@@ -579,7 +546,7 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("payment");
     setDataError("");
     try {
-      await requestApi("/api/payments", "POST", paymentForm);
+      await requestApi("payments", "POST", paymentForm);
       setPaymentForm({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10) });
       setModal(null);
       setActiveNav("Payments");
@@ -600,7 +567,7 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("service");
     setDataError("");
     try {
-      await requestApi("/api/services", "POST", serviceForm);
+      await requestApi("services", "POST", serviceForm);
       setServiceForm({ name: "", category: "" });
       setModal(null);
       setActiveNav("Services");
@@ -625,7 +592,7 @@ export function CrmWorkspace({ initialSession }) {
         <nav className="nav-list" aria-label="Main navigation">
           {visibleNavItems.map(([label, icon]) => <button key={label} className={`nav-item ${activeNav === label ? "active" : ""}`} onClick={() => setActiveNav(label)}><Icon name={icon} /><span>{label}</span>{label === "Clients" && <b className="nav-count">{scope.clients.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><button className="nav-item"><Icon name="shield" /><span>Security center</span></button><button className="nav-item"><Icon name="grid" /><span>Settings</span></button><div className="support-card"><div className="support-icon"><Icon name="bell" size={16} /></div><strong>Need a hand?</strong><p>Visit the help center or contact support.</p><button>Open help center <Icon name="arrow" size={14} /></button></div><div className="user-mini"><div className="avatar avatar-teal">{session.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><span>{session.roleLabel}</span></div><button className="logout-button" onClick={async () => { await fetch("/api/auth/session", { method: "DELETE" }); await signOut(auth); setSession(null); }}>Log out</button></div></div>
+        <div className="sidebar-bottom"><button className="nav-item"><Icon name="shield" /><span>Security center</span></button><button className="nav-item"><Icon name="grid" /><span>Settings</span></button><div className="support-card"><div className="support-icon"><Icon name="bell" size={16} /></div><strong>Need a hand?</strong><p>Visit the help center or contact support.</p><button>Open help center <Icon name="arrow" size={14} /></button></div><div className="user-mini"><div className="avatar avatar-teal">{session.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><span>{session.roleLabel}</span></div><button className="logout-button" onClick={async () => { await signOut(auth); setSession(null); }}>Log out</button></div></div>
       </aside>
 
       <section className="main-content">
@@ -644,7 +611,7 @@ export function CrmWorkspace({ initialSession }) {
 
           {activeNav === "Overview" ? <>
           <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell">{client.date}</td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid)} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(null); setClientToDelete(null); } }}>
@@ -655,14 +622,14 @@ export function CrmWorkspace({ initialSession }) {
               <label>Date<input required type="date" value={clientForm.date} onChange={(event) => setClientForm({ ...clientForm, date: event.target.value })} /></label>
               <label>Client name<input required value={clientForm.name} onChange={(event) => setClientForm({ ...clientForm, name: event.target.value })} placeholder="e.g. Falcon Traders" /></label>
               <label>Client provider<input required value={clientForm.provider} onChange={(event) => setClientForm({ ...clientForm, provider: event.target.value })} placeholder="e.g. XYZ Provider" /></label>
-              <label>Cell<input required value={clientForm.cell} onChange={(event) => setClientForm({ ...clientForm, cell: event.target.value })} placeholder="03XX-XXXXXXX" /></label>
-              <label>CNIC<input required value={clientForm.cnic} onChange={(event) => setClientForm({ ...clientForm, cnic: event.target.value })} placeholder="XXXXX-XXXXXXX-X" /></label>
+              <label>Cell<input required type="tel" inputMode="numeric" maxLength={11} pattern="[0-9]{11}" title="Enter exactly 11 digits." value={clientForm.cell} onChange={(event) => setClientForm({ ...clientForm, cell: limitDigits(event.target.value, 11) })} placeholder="11 digits" /></label>
+              <label>CNIC<input required type="tel" inputMode="numeric" maxLength={13} pattern="[0-9]{13}" title="Enter exactly 13 digits." value={clientForm.cnic} onChange={(event) => setClientForm({ ...clientForm, cnic: limitDigits(event.target.value, 13) })} placeholder="13 digits" /></label>
               <label>PIN<input required value={clientForm.pin} onChange={(event) => setClientForm({ ...clientForm, pin: event.target.value })} placeholder="Client PIN" /></label>
               <PasswordField label="Password" name="password" value={clientForm.password} onChange={(event) => setClientForm({ ...clientForm, password: event.target.value })} placeholder="Client password" minLength={6} autoComplete="new-password" />
               <label>Email<input required type="email" value={clientForm.email} onChange={(event) => setClientForm({ ...clientForm, email: event.target.value })} placeholder="client@email.com" /></label>
               <label>Work<input required value={clientForm.work} onChange={(event) => setClientForm({ ...clientForm, work: event.target.value })} placeholder="e.g. NTN Registration" /></label>
               <label className="description-field">Description (optional)<textarea value={clientForm.description} onChange={(event) => setClientForm({ ...clientForm, description: event.target.value })} placeholder="Client requirements or notes" rows={3} /></label>
-              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{employeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
+              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
               <label>Total amount<input required type="number" min="0" value={clientForm.amount} onChange={(event) => setClientForm({ ...clientForm, amount: event.target.value })} placeholder="100000" /></label>
               <label>Received amount<input type="number" min="0" value={clientForm.received} onChange={(event) => setClientForm({ ...clientForm, received: event.target.value })} placeholder="0" /></label>
             </div>
@@ -673,8 +640,8 @@ export function CrmWorkspace({ initialSession }) {
               <label>Date<input required type="date" value={clientEditForm.date} onChange={(event) => setClientEditForm({ ...clientEditForm, date: event.target.value })} /></label>
               <label>Client name<input required value={clientEditForm.name} onChange={(event) => setClientEditForm({ ...clientEditForm, name: event.target.value })} /></label>
               <label>Client provider<input required value={clientEditForm.provider} onChange={(event) => setClientEditForm({ ...clientEditForm, provider: event.target.value })} /></label>
-              <label>Cell<input value={clientEditForm.cell} onChange={(event) => setClientEditForm({ ...clientEditForm, cell: event.target.value })} /></label>
-              <label>CNIC<input value={clientEditForm.cnic} onChange={(event) => setClientEditForm({ ...clientEditForm, cnic: event.target.value })} /></label>
+              <label>Cell<input required type="tel" inputMode="numeric" maxLength={11} pattern="[0-9]{11}" title="Enter exactly 11 digits." value={clientEditForm.cell} onChange={(event) => setClientEditForm({ ...clientEditForm, cell: limitDigits(event.target.value, 11) })} /></label>
+              <label>CNIC<input required type="tel" inputMode="numeric" maxLength={13} pattern="[0-9]{13}" title="Enter exactly 13 digits." value={clientEditForm.cnic} onChange={(event) => setClientEditForm({ ...clientEditForm, cnic: limitDigits(event.target.value, 13) })} /></label>
               <label>PIN<input value={clientEditForm.pin} onChange={(event) => setClientEditForm({ ...clientEditForm, pin: event.target.value })} /></label>
               <PasswordField label="Client password" name="client-password" value={clientEditForm.password} onChange={(event) => setClientEditForm({ ...clientEditForm, password: event.target.value })} minLength={0} required={false} />
               <label>Email<input type="email" value={clientEditForm.email} onChange={(event) => setClientEditForm({ ...clientEditForm, email: event.target.value })} /></label>
@@ -699,19 +666,17 @@ export function CrmWorkspace({ initialSession }) {
             <p className="form-note"><Icon name="shield" size={14} /> The employee can sign in through the common login page.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "employee" ? "Saving..." : "Create employee"}</button></div>
           </form> : modal === "reset-employee-password" ? <form onSubmit={submitEmployeePasswordReset}>
-            <div className="form-grid">
-              <PasswordField label="New temporary password" name="password" value={passwordResetForm.password} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, password: event.target.value })} minLength={8} autoComplete="new-password" />
-            </div>
-            <p className="form-note"><Icon name="shield" size={14} /> The existing password cannot be viewed. This sets a new Firebase Auth password and is not saved in Firestore.</p>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Set new password</button></div>
+            <p className="form-note"><Icon name="shield" size={14} /> Firebase will email the employee a secure password reset link. Passwords are never managed or stored by the CRM.</p>
+            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Send reset email</button></div>
           </form> : modal === "edit-employee" ? <form onSubmit={submitEmployeeEdit}>
             <div className="form-grid">
               <label>Full name<input required value={employeeEditForm.name} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, name: event.target.value })} /></label>
-              <label>Email<input required type="email" value={employeeEditForm.email} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, email: event.target.value })} /></label>
+              <label>Email<input type="email" value={employeeEditForm.email} disabled /></label>
               <label>Phone<input required type="tel" value={employeeEditForm.phone} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, phone: event.target.value })} /></label>
               <label>Role<select required value={employeeEditForm.role} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, role: event.target.value })}>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[employeeRole]}</option>)}</select></label>
               {session.role === "admin" && <label>Reports to<select required value={employeeEditForm.managerUid} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, managerUid: event.target.value })}><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => employee.uid !== employeeEditForm.uid && ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[employeeEditForm.role]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
             </div>
+            <p className="form-note">Employee login email is managed by Firebase Authentication and cannot be changed from another account.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Save employee</button></div>
           </form> : modal === "service" ? <form onSubmit={submitService}>
             <div className="form-grid">

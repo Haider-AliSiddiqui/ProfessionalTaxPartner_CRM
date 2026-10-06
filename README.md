@@ -1,48 +1,19 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Professional Tax Partner CRM
 
-## Getting Started
+## Firebase client setup
 
-First, run the development server:
+1. Create a Firebase web app and copy its web configuration to `.env.local` using the `NEXT_PUBLIC_FIREBASE_*` names in `.env.example`. These values are web-app configuration, not service-account credentials.
+2. Enable Email/Password authentication in Firebase Authentication.
+3. Create the Firestore database and publish [`firestore.rules`](./firestore.rules). For example, select the correct Firebase project and run `firebase deploy --only firestore:rules`, or publish the file in Firebase Console > Firestore Database > Rules.
+4. Before the first administrator signup, create `system/bootstrap` in Firestore with `{ "status": "uninitialized" }`. Keep Firestore Rules published before enabling signup. The first signup atomically claims this document and creates the Admin profile; all later signup attempts are denied by the rules.
+5. Start the app with `npm run dev`. Employees are provisioned in the Admin portal and sign in through the same `/login` page.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Data access and roles
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The browser uses Firebase Authentication and the Firebase Web SDK directly. User profiles and CRM records live in Firestore; there are no Admin SDK credentials, server session cookies, or Firebase-backed API routes. `firestore.rules` is the authorization boundary for all reads and writes, including direct navigation to role dashboards.
 
-## Firebase Authentication and roles
+The role hierarchy is Admin, Sub Admin, Senior Technical, then JN Technical. Employee creation and employee management are limited to lower roles in the caller's reporting hierarchy. Sub Admins may assign or reassign clients to any active Senior Technical or JN Technical employee, including employees outside their own reporting branch; their client, payment, and related service views include records assigned to those technical roles. Senior Technical assignment scope remains limited to their own hierarchy. Team membership uses `managerUid` and falls back to `createdBy` for legacy profiles. Deactivating a Firestore user profile immediately blocks data access through the rules. Employee password resets use Firebase's email reset flow because the client SDK cannot set another user's password. Login email changes are not performed by managers because the Firebase client SDK cannot change another user's Authentication identity.
 
-1. Enable Email/Password sign-in in Firebase Authentication.
-2. Create a private Firebase service-account key. Set `FIREBASE_SERVICE_ACCOUNT_JSON` to its JSON on the server, or set `GOOGLE_APPLICATION_CREDENTIALS` to the local key-file path. The local `.env.local` uses the file-path option; save a newly rotated key at the configured path. Never use a `NEXT_PUBLIC_` variable for credentials.
-3. For production deployment (including Vercel and Netlify), use Node.js 22.12 or later in the 22.x line (required for the Firebase Admin SDK's ESM dependencies), add `FIREBASE_SERVICE_ACCOUNT_JSON` in the host's server environment settings using the complete service-account JSON, then redeploy. The repository's `.nvmrc` selects Node 22 for Netlify builds, and `netlify.toml` selects the Node 22 Functions runtime. The local `GOOGLE_APPLICATION_CREDENTIALS` Windows file path is not available on the deployment host. Optionally set `FIREBASE_PROJECT_ID` to the Firebase project ID.
-4. Publish `firestore.rules` to the Firebase project. With the Firebase CLI, run `firebase deploy --only firestore:rules` after selecting the correct project; alternatively publish the file in Firebase Console > Firestore Database > Rules.
-5. Start the app. The common login page offers Initial Admin Signup only while the authorized `users` collection is empty. Later employees are created inside a manager's portal and use the same login page.
+Existing Firebase Authentication users need a corresponding `users/{uid}` profile. Existing profiles should have `uid`, `name`, `email`, `role`, `status`, `createdBy`, and `permissions`; set `managerUid` to define the reporting hierarchy. Existing client records should have `assignedTo` set to a Firebase user UID for team-scoped access. Publish the new Firestore Rules only after verifying/migrating existing profiles and records.
 
-The server routes verify Firebase ID tokens, read the caller's Firestore profile, and enforce role hierarchy before employee or client-assignment writes. Portal pages also verify an httpOnly session cookie and the profile's active status. Firestore client access is restricted to the active assignee, that employee's management chain, and Admin; user profiles cannot be listed or changed from the browser SDK.
-
-Keep the service-account JSON private and rotate it if it is exposed. Existing employee records must be migrated into `users/{uid}` with `uid`, `role`, `status`, `createdBy`, and `permissions`. Set `managerUid` to the reporting manager's UID to define team visibility; legacy profiles without `managerUid` use `createdBy` as a fallback. `createdBy` remains the creator audit field. Client records need an `assignedTo` Firebase UID for non-Admin access.
-
-The public entry point redirects to `/login`; protected role portals are served at `/admin/dashboard`, `/sub-admin/dashboard`, `/senior-technical/dashboard`, and `/jn-technical/dashboard`.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The public entry point redirects to `/login`; the four protected role dashboards are `/admin/dashboard`, `/sub-admin/dashboard`, `/senior-technical/dashboard`, and `/jn-technical/dashboard`.

@@ -10,8 +10,8 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(uid)).data.status == 'active';
     }
 
-    function roleOf(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data.role;
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function roleRank(role) {
@@ -22,30 +22,283 @@ service cloud.firestore {
         : -1;
     }
 
-    function manages(uid) {
-      let target = get(/databases/$(database)/documents/users/$(uid)).data;
-      return roleOf(request.auth.uid) == 'admin'
-        || target.createdBy == request.auth.uid
-        || (target.createdBy != null
-          && get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy == request.auth.uid)
-        || (target.createdBy != null
-          && get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy != null
-          && get(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/users/$(target.createdBy)).data.createdBy)).data.createdBy == request.auth.uid);
+    function defaultPermissions(role) {
+      return role == 'admin'
+        ? ['manage_employees', 'manage_permissions', 'manage_clients', 'manage_assignments']
+        : role == 'sub_admin'
+          ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
+          : role == 'senior_technical'
+            ? ['manage_junior_employees', 'manage_assignments']
+            : [];
+    }
+
+    function hasPermission(permission) {
+      let profile = myProfile();
+      let permissions = profile.get('permissions', null);
+      return permissions is list
+        ? permission in permissions
+        : permission in defaultPermissions(profile.role);
+    }
+
+    function hasActiveRole() {
+      return signedIn() && activeUser(request.auth.uid);
+    }
+
+    function parentUid(profile) {
+      let managerUid = profile.get('managerUid', null);
+      return managerUid is string ? managerUid : profile.get('createdBy', null);
+    }
+
+    function managerOf(uid) {
+      return parentUid(get(/databases/$(database)/documents/users/$(uid)).data);
+    }
+
+    function isManagedByCaller(profile) {
+      let parent = parentUid(profile);
+      let grandparent = parent is string ? managerOf(parent) : null;
+      let greatGrandparent = grandparent is string
+        ? managerOf(grandparent)
+        : null;
+      return parent == request.auth.uid
+        || grandparent == request.auth.uid
+        || greatGrandparent == request.auth.uid;
+    }
+
+    function canManageRole(role) {
+      return (myProfile().role == 'admin' && hasPermission('manage_employees'))
+        || (myProfile().role == 'sub_admin' && hasPermission('manage_lower_employees'))
+        || (myProfile().role == 'senior_technical' && hasPermission('manage_junior_employees'));
+    }
+
+    function isAllowedEmployeeManager(data) {
+      let manager = get(/databases/$(database)/documents/users/$(data.managerUid)).data;
+      return activeUser(data.managerUid)
+        && roleRank(manager.role) >= 0
+        && roleRank(manager.role) < roleRank(data.role)
+        && (myProfile().role == 'admin' || data.managerUid == request.auth.uid);
+    }
+
+    function canCreateEmployee(data) {
+      return hasActiveRole()
+        && canManageRole(data.role)
+        && roleRank(data.role) > roleRank(myProfile().role)
+        && data.role in ['sub_admin', 'senior_technical', 'jn_technical']
+        && data.createdBy == request.auth.uid
+        && data.status in ['active', 'inactive']
+        && data.permissions == defaultPermissions(data.role)
+        && isAllowedEmployeeManager(data);
+    }
+
+    function isBootstrapAdmin(data) {
+      return signedIn()
+        && data.uid == request.auth.uid
+        && data.role == 'admin'
+        && data.status == 'active'
+        && data.createdBy == null
+        && data.permissions == defaultPermissions('admin')
+        && existsAfter(/databases/$(database)/documents/system/bootstrap)
+        && getAfter(/databases/$(database)/documents/system/bootstrap).data.status == 'initialized'
+        && getAfter(/databases/$(database)/documents/system/bootstrap).data.adminUid == request.auth.uid;
+    }
+
+    function canReadUser(uid, data) {
+      return signedIn()
+        && (uid == request.auth.uid
+          || (hasActiveRole()
+            && (myProfile().role == 'admin'
+              || (roleRank(data.role) > roleRank(myProfile().role)
+                && ((myProfile().role == 'sub_admin'
+                  && data.role in ['senior_technical', 'jn_technical'])
+                  || isManagedByCaller(data)))));
+    }
+
+    function canSeeEmployee(uid) {
+      return uid == request.auth.uid
+        || (exists(/databases/$(database)/documents/users/$(uid))
+          && roleRank(get(/databases/$(database)/documents/users/$(uid)).data.role) > roleRank(myProfile().role)
+          && ((myProfile().role == 'sub_admin'
+            && get(/databases/$(database)/documents/users/$(uid)).data.role in ['senior_technical', 'jn_technical'])
+            || isManagedByCaller(get(/databases/$(database)/documents/users/$(uid)).data)));
+    }
+
+    function canUpdateEmployee(uid, oldData, newData) {
+      return hasActiveRole()
+        && uid != request.auth.uid
+        && isManagedByCaller(oldData)
+        && roleRank(oldData.role) > roleRank(myProfile().role)
+        && canManageRole(oldData.role)
+        && newData.diff(oldData).affectedKeys().hasOnly([
+          'name', 'phone', 'role', 'status', 'managerUid', 'permissions', 'updatedAt'
+        ])
+        && (!newData.diff(oldData).affectedKeys().hasAny(['role'])
+          || (newData.role in ['sub_admin', 'senior_technical', 'jn_technical']
+            && roleRank(newData.role) > roleRank(myProfile().role)))
+        && (!newData.diff(oldData).affectedKeys().hasAny(['permissions'])
+          || (newData.diff(oldData).affectedKeys().hasAny(['role'])
+            && newData.permissions == defaultPermissions(newData.role))
+          || (myProfile().role == 'admin'
+            && hasPermission('manage_permissions')
+            && newData.permissions is list
+            && newData.permissions.hasOnly([
+              'manage_employees', 'manage_permissions', 'manage_lower_employees',
+              'manage_junior_employees', 'manage_clients', 'manage_assignments'
+            ])))
+        && (!newData.diff(oldData).affectedKeys().hasAny(['status'])
+          || newData.status in ['active', 'inactive'])
+        && (!newData.diff(oldData).affectedKeys().hasAny(['managerUid'])
+          || (myProfile().role == 'admin' && isAllowedEmployeeManager(newData)))
+        && newData.name is string
+        && newData.phone is string;
     }
 
     function canAccessClient(data) {
-      return signedIn() && activeUser(request.auth.uid)
-        && (roleOf(request.auth.uid) == 'admin'
+      return hasActiveRole()
+        && (myProfile().role == 'admin'
           || data.assignedTo == request.auth.uid
           || (data.assignedTo is string
-            && roleRank(roleOf(request.auth.uid)) >= 0
-            && roleRank(roleOf(data.assignedTo)) > roleRank(roleOf(request.auth.uid))
-            && manages(data.assignedTo)));
+            && roleRank(myProfile().role) >= 0
+            && roleRank(get(/databases/$(database)/documents/users/$(data.assignedTo)).data.role) > roleRank(myProfile().role)
+            && (myProfile().role == 'sub_admin'
+              || isManagedByCaller(get(/databases/$(database)/documents/users/$(data.assignedTo)).data))));
+    }
+
+    function canAssignTo(uid) {
+      let target = get(/databases/$(database)/documents/users/$(uid)).data;
+      return hasActiveRole()
+        && hasPermission('manage_assignments')
+        && activeUser(uid)
+        && roleRank(target.role) > roleRank(myProfile().role)
+        && (myProfile().role == 'admin'
+          || (myProfile().role == 'sub_admin'
+            && target.role in ['senior_technical', 'jn_technical'])
+          || isManagedByCaller(target));
+    }
+
+    function canCreateClient(data) {
+      return hasActiveRole()
+        && hasPermission('manage_assignments')
+        && data.createdBy == request.auth.uid
+        && data.assignedBy == request.auth.uid
+        && canAssignTo(data.assignedTo)
+        && data.name is string
+        && data.provider is string
+        && data.status in ['New', 'Pending', 'In Progress', 'Completed', 'Cancelled']
+        && data.cell is string
+        && data.cell.matches('^[0-9]{11}$')
+        && data.cnic is string
+        && data.cnic.matches('^[0-9]{13}$')
+        && data.totalAmount is number
+        && data.totalReceived is number
+        && data.totalAmount >= 0
+        && data.totalReceived >= 0
+        && data.totalReceived <= data.totalAmount;
+    }
+
+    function isClientCreator(data) {
+      return data.assignedBy == request.auth.uid || data.createdBy == request.auth.uid;
+    }
+
+    function canUpdateClientStatus(oldData, newData) {
+      return canAccessClient(oldData)
+        && newData.diff(oldData).affectedKeys().hasOnly(['status', 'updatedBy', 'updatedAt'])
+        && newData.status in ['New', 'Pending', 'In Progress', 'Completed', 'Cancelled']
+        && newData.updatedBy == request.auth.uid;
+    }
+
+    function canUpdateClientAssignment(oldData, newData) {
+      return canAccessClient(oldData)
+        && hasPermission('manage_assignments')
+        && canAssignTo(newData.assignedTo)
+        && newData.diff(oldData).affectedKeys().hasOnly([
+          'assignedTo', 'assignedBy', 'assignedAt', 'assignmentHistory'
+        ])
+        && newData.assignedBy == request.auth.uid
+        && newData.assignmentHistory is list;
+    }
+
+    function canUpdateClientPayment(oldData, newData, clientId) {
+      let paymentId = newData.lastPaymentId;
+      let oldTotalAmount = oldData.get('totalAmount', null);
+      let oldTotalReceived = oldData.get('totalReceived', null);
+      let previousAmount = oldTotalAmount is number
+        ? oldTotalAmount
+        : oldData.get('amount', 0);
+      let previousReceived = oldTotalReceived is number
+        ? oldTotalReceived
+        : oldData.get('received', 0);
+      return canAccessClient(oldData)
+        && newData.diff(oldData).affectedKeys().hasOnly([
+          'amount', 'totalAmount', 'received', 'totalReceived', 'remaining',
+          'status', 'payment', 'paymentStatus', 'paymentDate', 'lastPaymentId',
+          'updatedAt'
+        ])
+        && paymentId is string
+        && existsAfter(/databases/$(database)/documents/payments/$(paymentId))
+        && getAfter(/databases/$(database)/documents/payments/$(paymentId)).data.clientId == clientId
+        && getAfter(/databases/$(database)/documents/payments/$(paymentId)).data.recordedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/payments/$(paymentId)).data.amount > 0
+        && newData.totalReceived == previousReceived + getAfter(/databases/$(database)/documents/payments/$(paymentId)).data.amount
+        && newData.totalAmount == previousAmount
+        && newData.totalReceived <= newData.totalAmount
+        && newData.status in ['New', 'Pending', 'In Progress', 'Completed', 'Cancelled']
+        && newData.updatedAt is timestamp;
+    }
+
+    function canCreatePayment(data, paymentId) {
+      let clientPath = /databases/$(database)/documents/clients/$(data.clientId);
+      let client = getAfter(clientPath).data;
+      let previousReceived = exists(clientPath)
+        ? (get(clientPath).data.get('totalReceived', null) is number
+          ? get(clientPath).data.get('totalReceived', 0)
+          : get(clientPath).data.get('received', 0))
+        : 0;
+      return hasActiveRole()
+        && data.recordedBy == request.auth.uid
+        && data.amount is number
+        && data.amount > 0
+        && existsAfter(clientPath)
+        && client.lastPaymentId == paymentId
+        && client.assignedTo == data.assignedTo
+        && (exists(clientPath)
+          ? client.totalReceived == previousReceived + data.amount
+          : client.totalReceived == data.amount)
+        && (myProfile().role == 'admin'
+          || client.assignedTo == request.auth.uid
+          || (roleRank(get(/databases/$(database)/documents/users/$(client.assignedTo)).data.role) > roleRank(myProfile().role)
+            && isManagedByCaller(get(/databases/$(database)/documents/users/$(client.assignedTo)).data)));
+    }
+
+    function canDeleteLinkedRecord(clientId) {
+      let clientPath = /databases/$(database)/documents/clients/$(clientId);
+      return hasActiveRole()
+        && exists(clientPath)
+        && (myProfile().role == 'admin'
+          || get(clientPath).data.assignedBy == request.auth.uid
+          || get(clientPath).data.createdBy == request.auth.uid);
+    }
+
+    match /system/bootstrap {
+      allow get: if true;
+      allow list, create, delete: if false;
+      allow update: if signedIn()
+        && resource.data.status == 'uninitialized'
+        && request.resource.data.status == 'initialized'
+        && request.resource.data.adminUid == request.auth.uid
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'adminUid', 'initializedAt'
+        ]);
     }
 
     match /users/{uid} {
-      allow get: if signedIn() && activeUser(request.auth.uid) && request.auth.uid == uid;
-      allow list, create, update, delete: if false;
+      allow get, list: if canReadUser(uid, resource.data);
+      allow create: if request.resource.data.uid == uid
+        && (isBootstrapAdmin(request.resource.data)
+          || canCreateEmployee(request.resource.data));
+      allow update: if request.resource.data.uid == uid
+        && canUpdateEmployee(uid, resource.data, request.resource.data);
+      allow delete: if false;
     }
 
     match /employees/{uid} {
@@ -54,7 +307,61 @@ service cloud.firestore {
 
     match /clients/{clientId} {
       allow get, list: if canAccessClient(resource.data);
-      allow create, update, delete: if false;
+      allow create: if canCreateClient(request.resource.data);
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'updatedBy', 'updatedAt'
+        ]) && canUpdateClientStatus(resource.data, request.resource.data)
+        || request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'assignedTo', 'assignedBy', 'assignedAt', 'assignmentHistory'
+        ]) && canUpdateClientAssignment(resource.data, request.resource.data)
+        || (hasActiveRole()
+          && (myProfile().role == 'admin' || isClientCreator(resource.data))
+          && (hasPermission('manage_clients') || hasPermission('manage_assignments'))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
+            'email', 'work', 'description', 'amount', 'totalAmount', 'received',
+            'totalReceived', 'remaining', 'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
+          ]))
+          && request.resource.data.cell is string
+          && request.resource.data.cell.matches('^[0-9]{11}$')
+          && request.resource.data.cnic is string
+          && request.resource.data.cnic.matches('^[0-9]{13}$')
+        || canUpdateClientPayment(resource.data, request.resource.data, clientId);
+      allow delete: if hasActiveRole()
+        && (myProfile().role == 'admin' || isClientCreator(resource.data));
+    }
+
+    match /payments/{paymentId} {
+      allow get, list: if hasActiveRole()
+        && (myProfile().role == 'admin'
+          || (resource.data.clientId is string
+            && exists(/databases/$(database)/documents/clients/$(resource.data.clientId))
+            && canAccessClient(get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data)));
+      allow create: if canCreatePayment(request.resource.data, paymentId);
+      allow update: if false;
+      allow delete: if canDeleteLinkedRecord(resource.data.clientId);
+    }
+
+    match /services/{serviceId} {
+      allow get, list: if hasActiveRole()
+        && (myProfile().role == 'admin'
+          || resource.data.createdBy == request.auth.uid
+          || resource.data.assignedTo == request.auth.uid
+          || (resource.data.createdBy is string && canSeeEmployee(resource.data.createdBy))
+          || (resource.data.assignedTo is string && canSeeEmployee(resource.data.assignedTo))
+          || (resource.data.clientId is string
+            && canAccessClient(get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data)));
+      allow create: if hasActiveRole()
+        && hasPermission('manage_clients')
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.assignedTo == request.auth.uid;
+      allow update: if false;
+      allow delete: if resource.data.clientId is string
+        && canDeleteLinkedRecord(resource.data.clientId);
+    }
+
+    match /clientIdentityLocks/{lockId} {
+      allow read, write: if false;
     }
 
     match /{document=**} {
