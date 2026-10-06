@@ -128,23 +128,51 @@ export async function POST(request) {
     if (reserved) await bootstrapRef?.delete().catch(() => {});
     const details = describeError(error);
     console.error("Initial Admin signup failed:", details);
-    const status =
-      details.code === "auth/email-already-exists"
-        ? 409
-        : details.message.toLowerCase().includes("signup is closed")
-          ? 403
-          : 400;
+    const signupClosed = details.message
+      .toLowerCase()
+      .includes("signup is closed");
+    const duplicateEmail = details.code === "auth/email-already-exists";
+    const invalidPhone = details.message.startsWith(
+      "Enter a valid phone number",
+    );
+    const invalidAuthInput = [
+      "auth/invalid-email",
+      "auth/invalid-password",
+      "auth/invalid-phone-number",
+      "auth/missing-email",
+      "auth/missing-password",
+      "auth/weak-password",
+    ].includes(details.code);
+    const malformedRequest = error instanceof SyntaxError;
     const configurationError =
       !auth ||
       details.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON") ||
       details.message.includes("GOOGLE_APPLICATION_CREDENTIALS");
+    const status = signupClosed
+      ? 403
+      : duplicateEmail
+        ? 409
+        : configurationError
+          ? 503
+          : invalidPhone || invalidAuthInput || malformedRequest
+            ? 400
+            : 500;
+    const errorMessage = signupClosed
+      ? "Admin signup is closed. Ask an administrator to create your account."
+      : duplicateEmail
+        ? "An account with this email already exists."
+        : configurationError
+          ? "Firebase server configuration is unavailable. Check the server credentials and Firestore access."
+          : invalidPhone
+            ? details.message
+            : invalidAuthInput
+              ? "Check the email, phone number, and password, then try again."
+              : malformedRequest
+                ? "The signup request could not be read."
+                : "The initial Admin account could not be created because of a server error. Check the server logs.";
     return Response.json(
-      {
-        error: configurationError
-          ? "Firebase server configuration is unavailable."
-          : details.message || "Could not create the initial Admin account.",
-      },
-      { status: configurationError ? 503 : status },
+      { error: errorMessage },
+      { status },
     );
   }
 }
