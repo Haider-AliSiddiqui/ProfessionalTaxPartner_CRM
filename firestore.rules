@@ -327,7 +327,8 @@ service cloud.firestore {
           && (hasPermission('manage_clients') || hasPermission('manage_assignments'))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
-            'email', 'work', 'description', 'amount', 'totalAmount', 'received',
+            'email', 'work', 'description', 'document', 'documentName', 'documentType',
+            'amount', 'totalAmount', 'received',
             'totalReceived', 'remaining', 'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
           ]))
           && request.resource.data.cell is string

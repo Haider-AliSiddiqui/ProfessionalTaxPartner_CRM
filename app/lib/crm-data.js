@@ -419,11 +419,22 @@ async function updateEmployee(caller, input) {
     }
     updates.permissions = [...new Set(input.permissions)];
   }
+  if (input.password !== undefined && input.password !== null && input.password !== "") {
+    if (caller.role !== "admin") {
+      throw new Error("Only Admin can set a new employee password.");
+    }
+    const password = String(input.password);
+    if (password.length < 8) {
+      throw new Error("The new password must be at least 8 characters.");
+    }
+    updates.passwordReset = password;
+  }
   await updateDoc(doc(db, "users", uid), updates);
+  const { passwordReset: _passwordReset, ...safeUpdates } = updates;
   return {
     uid,
     ...target,
-    ...updates,
+    ...safeUpdates,
     role: updates.role || target.role,
     status: updates.status || target.status,
     permissions: updates.permissions || target.permissions || [],
@@ -505,6 +516,9 @@ async function createClient(caller, input) {
         "email",
         "work",
         "description",
+        "document",
+        "documentName",
+        "documentType",
         "initials",
         "color",
       ]
@@ -545,6 +559,7 @@ async function createClient(caller, input) {
         assignedTo,
         amount: received,
         date: paymentDate,
+        receivedAt: String(input.receivedAt || "").trim(),
         recordedBy: caller.uid,
         recordedByName: caller.name || "Unknown user",
         createdAt: serverTimestamp(),
@@ -557,6 +572,9 @@ async function createClient(caller, input) {
       name,
       provider,
       assignedTo,
+      document: String(input.document || "").trim(),
+      documentName: String(input.documentName || "").trim(),
+      documentType: String(input.documentType || "").trim(),
       status,
       amount,
       received,
@@ -667,6 +685,7 @@ async function updateClient(caller, input) {
         email,
         work: String(input.work || "").trim(),
         description: String(input.description || "").trim(),
+        document: String(input.document || "").trim(),
         amount: totalAmount,
         totalAmount,
         received: totalReceived,
@@ -747,6 +766,7 @@ async function createPayment(caller, input) {
   const clientId = String(input.clientId || "");
   const amount = Number(input.amount);
   const date = input.date || new Date().toISOString().slice(0, 10);
+  const receivedAt = String(input.receivedAt || "").trim();
   if (!clientId || !Number.isFinite(amount) || amount <= 0) {
     throw new Error("Client and a payment amount greater than zero are required.");
   }
@@ -782,6 +802,7 @@ async function createPayment(caller, input) {
       assignedTo: client.assignedTo,
       amount,
       date,
+      receivedAt,
       recordedBy: caller.uid,
       recordedByName: caller.name || "Unknown user",
       createdAt: serverTimestamp(),

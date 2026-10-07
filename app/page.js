@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./lib/firebase";
-import { crmRequest, sendEmployeePasswordReset } from "./lib/crm-data";
+import { crmRequest } from "./lib/crm-data";
 import BrandLogo from "./brand-logo";
 
 const navItems = [
@@ -46,6 +46,20 @@ function ClientRowActions({ client, canManage, onEditClient, onDeleteClient }) {
   </div>;
 }
 
+function DocumentLink({ client }) {
+  if (!client.document) return <span className="document-empty">-</span>;
+
+  return <button
+    type="button"
+    className="document-link"
+    title={client.documentName || "Open document"}
+    onClick={() => openDocumentInNewTab(client)}
+  >
+    <Icon name="file" size={14} />
+    {client.documentName || "Add documents"}
+  </button>;
+}
+
 function LiveOverview({ clients, isLoading }) {
   const totalReceived = clients.reduce((total, client) => total + (Number(client.received) || 0), 0);
   const outstanding = clients.reduce((total, client) => total + Math.max((Number(client.amount) || 0) - (Number(client.received) || 0), 0), 0);
@@ -76,11 +90,34 @@ function downloadExcelRecords(records) {
   const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `PTP-completed-records-${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
+  window.open(url, "_blank", "noopener,noreferrer");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("The selected file could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header = "", encoded = ""] = String(dataUrl).split(",");
+  const mime = /data:([^;]+)/.exec(header)?.[1] || "application/octet-stream";
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mime });
+}
+
+function openDocumentInNewTab(client) {
+  const document = String(client?.document || "");
+  if (!document) return;
+  const url = document.startsWith("data:") ? URL.createObjectURL(dataUrlToBlob(document)) : document;
+  window.open(url, "_blank", "noopener,noreferrer");
+  if (url !== document) setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function PasswordField({ label, value, onChange, placeholder, minLength = 8, name, required = true, autoComplete }) {
@@ -148,9 +185,9 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table></div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell">{client.date || "29 Sep 2026"}</td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table></div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
-      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td>{client.date || "29 Sep 2026"}</td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password ? "••••••" : "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
+      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td>{client.date || "29 Sep 2026"}</td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
       {section === "Reports" && <div className="empty-workspace"><div className="workspace-icon"><Icon name="chart" size={24} /></div><h3>Authorized operations report</h3><p>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received.</p><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>}
       {((section === "Employees" && filteredEmployees.length === 0) || (section === "Clients" && filteredClients.length === 0) || (section === "Services" && filteredServices.length === 0)) && <div className="empty-state">No authorized {section.toLowerCase()} match this search.</div>}
@@ -180,12 +217,14 @@ export function CrmWorkspace({ initialSession }) {
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
   const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "" });
+  const [clientDocument, setClientDocument] = useState(null);
+  const [isReadingDocument, setIsReadingDocument] = useState(false);
   const [clientEditForm, setClientEditForm] = useState({ id: "", date: "", name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", totalAmount: "", totalReceived: "" });
   const [paymentForm, setPaymentForm] = useState({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10) });
   const [serviceForm, setServiceForm] = useState({ name: "", category: "" });
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
   const [newEmployeeRole, setNewEmployeeRole] = useState("");
-  const [passwordResetForm, setPasswordResetForm] = useState({ uid: "" });
+  const [passwordResetForm, setPasswordResetForm] = useState({ uid: "", password: "", confirmPassword: "" });
   const employeeRoleOptions = ({
     admin: ["sub_admin", "senior_technical", "jn_technical"],
     sub_admin: ["senior_technical", "jn_technical"],
@@ -325,7 +364,31 @@ export function CrmWorkspace({ initialSession }) {
     return matchesQuery && matchesFilter;
   }), [scope.clients, query, filter]);
 
-  const openModal = (type) => setModal(type);
+  const openModal = (type) => {
+    if (type === "client") {
+      setClientDocument(null);
+      setIsReadingDocument(false);
+    }
+    setModal(type);
+  };
+  const selectClientDocument = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setClientDocument(null);
+      return;
+    }
+    setIsReadingDocument(true);
+    setDataError("");
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setClientDocument({ name: file.name, type: file.type || "application/octet-stream", dataUrl });
+    } catch (error) {
+      setClientDocument(null);
+      setDataError(`Could not read the selected document: ${error.message}`);
+    } finally {
+      setIsReadingDocument(false);
+    }
+  };
   const submitClient = async (event) => {
     event.preventDefault();
     if (submitLock.current) return;
@@ -347,6 +410,9 @@ export function CrmWorkspace({ initialSession }) {
         email: clientForm.email.trim(),
         work: clientForm.work.trim(),
         description: clientForm.description.trim(),
+        document: clientDocument?.dataUrl || "",
+        documentName: clientDocument?.name || "",
+        documentType: clientDocument?.type || "",
         initials: clientForm.name.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
         status: "Pending",
         totalAmount: total,
@@ -354,6 +420,7 @@ export function CrmWorkspace({ initialSession }) {
         color: "mint",
       });
       setClientForm({ date: new Date().toISOString().slice(0, 10), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "" });
+      setClientDocument(null);
       setModal(null);
       setActiveNav("Clients");
       if (activeNav === "Clients") {
@@ -471,23 +538,39 @@ export function CrmWorkspace({ initialSession }) {
     setModal("edit-employee");
   };
   const openEmployeePasswordReset = (employee) => {
-    setPasswordResetForm({ uid: employee.uid });
+    setPasswordResetForm({ uid: employee.uid, password: "", confirmPassword: "" });
     setModal("reset-employee-password");
   };
   const submitEmployeePasswordReset = async (event) => {
     event.preventDefault();
     setDataError("");
+    if (passwordResetForm.password.length < 8) {
+      setDataError("Could not set employee password: the new password must be at least 8 characters.");
+      return;
+    }
+    if (passwordResetForm.password !== passwordResetForm.confirmPassword) {
+      setDataError("Could not set employee password: the password confirmation does not match.");
+      return;
+    }
+    submitLock.current = true;
+    setSavingAction("reset-employee-password");
     try {
       const employee = employeeRecords.find(
         (record) => record.uid === passwordResetForm.uid,
       );
-      if (!employee?.email) throw new Error("Employee email address is unavailable.");
-      await sendEmployeePasswordReset(employee.email);
+      if (!employee) throw new Error("Employee record is unavailable.");
+      await requestApi("employees", "PATCH", {
+        uid: employee.uid,
+        password: passwordResetForm.password,
+      });
       setModal(null);
-      setPasswordResetForm({ uid: "" });
-      setDataError("Password reset email sent to the employee.");
+      setPasswordResetForm({ uid: "", password: "", confirmPassword: "" });
+      setDataError(`New password saved for ${employee.name}.`);
     } catch (error) {
-      setDataError(`Could not reset employee password: ${error.message}`);
+      setDataError(`Could not set employee password: ${error.message}`);
+    } finally {
+      submitLock.current = false;
+      setSavingAction(null);
     }
   };
   const submitEmployeeEdit = async (event) => {
@@ -629,6 +712,10 @@ export function CrmWorkspace({ initialSession }) {
               <label>Email<input required type="email" value={clientForm.email} onChange={(event) => setClientForm({ ...clientForm, email: event.target.value })} placeholder="client@email.com" /></label>
               <label>Work<input required value={clientForm.work} onChange={(event) => setClientForm({ ...clientForm, work: event.target.value })} placeholder="e.g. NTN Registration" /></label>
               <label className="description-field">Description (optional)<textarea value={clientForm.description} onChange={(event) => setClientForm({ ...clientForm, description: event.target.value })} placeholder="Client requirements or notes" rows={3} /></label>
+              <label className="document-field">Add documents (optional)
+                <input type="file" onChange={selectClientDocument} />
+                <span className="document-file-name">{isReadingDocument ? "Reading file..." : clientDocument ? clientDocument.name : "No file selected"}</span>
+              </label>
               <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
               <label>Total amount<input required type="number" min="0" value={clientForm.amount} onChange={(event) => setClientForm({ ...clientForm, amount: event.target.value })} placeholder="100000" /></label>
               <label>Received amount<input type="number" min="0" value={clientForm.received} onChange={(event) => setClientForm({ ...clientForm, received: event.target.value })} placeholder="0" /></label>
@@ -666,8 +753,12 @@ export function CrmWorkspace({ initialSession }) {
             <p className="form-note"><Icon name="shield" size={14} /> The employee can sign in through the common login page.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "employee" ? "Saving..." : "Create employee"}</button></div>
           </form> : modal === "reset-employee-password" ? <form onSubmit={submitEmployeePasswordReset}>
-            <p className="form-note"><Icon name="shield" size={14} /> Firebase will email the employee a secure password reset link. Passwords are never managed or stored by the CRM.</p>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Send reset email</button></div>
+            <p className="form-note"><Icon name="shield" size={14} /> Set a new login password for this employee. No reset email is sent — the employee signs in with the password you enter here.</p>
+            <div className="form-grid">
+              <PasswordField label="New password" name="password" value={passwordResetForm.password} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, password: event.target.value })} placeholder="At least 8 characters" autoComplete="new-password" />
+              <PasswordField label="Confirm new password" name="confirmPassword" value={passwordResetForm.confirmPassword} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, confirmPassword: event.target.value })} placeholder="Re-enter the new password" autoComplete="new-password" />
+            </div>
+            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "reset-employee-password" ? "Saving..." : "Save password"}</button></div>
           </form> : modal === "edit-employee" ? <form onSubmit={submitEmployeeEdit}>
             <div className="form-grid">
               <label>Full name<input required value={employeeEditForm.name} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, name: event.target.value })} /></label>
