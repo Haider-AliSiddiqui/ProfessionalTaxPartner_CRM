@@ -10,6 +10,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   query,
   runTransaction,
   serverTimestamp,
@@ -19,7 +20,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import { app, auth, db } from "./firebase.js";
+import { app, auth, db, passwordResetSettings } from "./firebase.js";
 import {
   hasPermission,
   isRoleBelow,
@@ -33,6 +34,33 @@ const employeeAuthAppName = "crm-employee-provisioning";
 
 function recordFromSnapshot(snapshot) {
   return { id: snapshot.id, ...snapshot.data() };
+}
+
+function workShiftFromTime(workTime) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(workTime || "").trim());
+  if (!match) return "";
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) {
+    return "";
+  }
+  const totalMinutes = hours * 60 + minutes;
+  const startMinutes = 10 * 60;
+  const endMinutes = 17 * 60;
+  return totalMinutes >= startMinutes && totalMinutes < endMinutes ? "Morning" : "Night";
+}
+
+function normalizeWorkTime(value) {
+  const raw = String(value || "").trim();
+  return /^\d{1,2}:\d{2}$/.test(raw) ? raw : "";
+}
+
+function workTimeFromTimestamp(value) {
+  const parsed = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return "";
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
 }
 
 function normalizeIdentity(value) {
@@ -142,6 +170,8 @@ async function getClientRecords(profile, teamProfiles) {
       const received = Number(data.totalReceived ?? data.received) || 0;
       const owner =
         names.get(data.assignedTo) || data.owner || "Unassigned";
+      const workTime =
+        normalizeWorkTime(data.workTime) || workTimeFromTimestamp(data.createdAt);
       return {
         id: record.id,
         ...data,
@@ -151,6 +181,8 @@ async function getClientRecords(profile, teamProfiles) {
         received,
         remaining: Math.max(amount - received, 0),
         payment: data.paymentStatus || data.payment || "Pending",
+        workTime,
+        workShift: workShiftFromTime(workTime),
       };
     });
 }
@@ -505,6 +537,7 @@ async function createClient(caller, input) {
   const paymentRef = received > 0 ? doc(collection(db, "payments")) : null;
   const paymentDate =
     input.paymentDate || input.date || new Date().toISOString().slice(0, 10);
+  const workTime = normalizeWorkTime(input.workTime);
   const client = {
     ...Object.fromEntries(
       [
@@ -538,6 +571,8 @@ async function createClient(caller, input) {
     ],
     createdBy: caller.uid,
     createdAt: serverTimestamp(),
+    workTime,
+    workShift: workShiftFromTime(workTime),
     status,
     amount,
     totalAmount: amount,
@@ -662,6 +697,7 @@ async function updateClient(caller, input) {
         : totalReceived > 0
           ? "Partial"
           : "Pending";
+    const workTime = normalizeWorkTime(input.workTime);
     await runTransaction(db, async (transaction) => {
       const currentSnapshot = await transaction.get(clientRef);
       if (!currentSnapshot.exists() || currentSnapshot.data().archivedAt) {
@@ -686,6 +722,8 @@ async function updateClient(caller, input) {
         work: String(input.work || "").trim(),
         description: String(input.description || "").trim(),
         document: String(input.document || "").trim(),
+        workTime,
+        workShift: workShiftFromTime(workTime),
         amount: totalAmount,
         totalAmount,
         received: totalReceived,
@@ -906,7 +944,30 @@ export async function crmRequest(user, path, method = "GET", input = {}) {
 }
 
 export async function sendEmployeePasswordReset(email) {
-  await sendPasswordResetEmail(auth, email);
+  await sendPasswordResetEmail(auth, email, passwordResetSettings);
+}
+
+// Confirms that an email address belongs to an Admin account before a password
+// reset link is sent. This runs before the caller is signed in, so it relies on
+// the narrow "recovery lookup" rule in firestore.rules: the query may only match
+// the email the caller already typed, and only documents whose role is 'admin'
+// are readable. No password (or password hash) is ever exposed — Firebase never
+// stores it in a recoverable form — the caller only learns whether the account
+// exists, and a reset link is emailed to the account's own inbox.
+export async function verifyAdminRecoveryEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Enter your account email first, then select Forgot password.");
+  }
+  const snapshot = await getDocs(
+    query(
+      collection(db, "users"),
+      where("email", "==", normalized),
+      where("role", "==", "admin"),
+      limit(1),
+    ),
+  );
+  return snapshot.docs.map((record) => record.data())[0] || null;
 }
 
 export async function createInitialAdmin({ name, email, phone, password }) {

@@ -44,6 +44,18 @@ service cloud.firestore {
       return signedIn() && activeUser(request.auth.uid);
     }
 
+    // Anonymous password recovery lookup. The client must repeat the exact email
+    // address it already knows; no other field can be unlocked with it. This is
+    // what lets the login page confirm "this email belongs to an Admin account"
+    // before Firebase sends a reset link. Only these fields may ever be read.
+    function isRecoveryLookup() {
+      return request.query.email is string
+        && request.query.email == resource.data.email
+        && resource.data.role == 'admin'
+        && request.query.limit == 1
+        && request.query.limit <= 1;
+    }
+
     function parentUid(profile) {
       let managerUid = profile.get('managerUid', null);
       return managerUid is string ? managerUid : profile.get('createdBy', null);
@@ -300,7 +312,11 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow get, list: if canReadUser(uid, resource.data);
+      allow get, list: if canReadUser(uid, resource.data)
+        || (isRecoveryLookup()
+          && resource.data.keys().hasOnly([
+            'uid', 'name', 'email', 'phone', 'role'
+          ]));
       allow create: if request.resource.data.uid == uid
         && (isBootstrapAdmin(request.resource.data)
           || canCreateEmployee(request.resource.data));

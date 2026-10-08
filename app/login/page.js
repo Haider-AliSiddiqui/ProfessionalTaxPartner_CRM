@@ -7,11 +7,12 @@ import {
   signOut,
 } from "firebase/auth";
 import { useRouter } from "next/navigation";
-import { auth } from "@/app/lib/firebase";
+import { auth, passwordResetSettings } from "@/app/lib/firebase";
 import {
   createInitialAdmin,
   getBootstrapStatus,
   getCurrentProfile,
+  verifyAdminRecoveryEmail,
 } from "@/app/lib/crm-data";
 import BrandLogo from "@/app/brand-logo";
 
@@ -123,8 +124,22 @@ export default function LoginPage() {
 
     setBusy(true);
     try {
-      await sendPasswordResetEmail(auth, email);
-      setResetMessage("Password reset email sent. Check your inbox and spam folder.");
+      // Step 1: confirm the email belongs to an Admin account in Firestore.
+      const admin = await verifyAdminRecoveryEmail(email).catch(() => null);
+      if (!admin) {
+        setError(
+          "This email is not registered to an Admin account. Check the address, or ask another Admin to reset your access.",
+        );
+        return;
+      }
+
+      // Step 2: the account exists and is an Admin, so let Firebase email the
+      // reset link to that account's own inbox. Firebase never sends the old
+      // password back — passwords are stored one-way and cannot be recovered.
+      await sendPasswordResetEmail(auth, email, passwordResetSettings);
+      setResetMessage(
+        `Password reset email sent to ${email}. Open the link to set a new password.`,
+      );
     } catch (resetError) {
       setError(
         resetError.code === "auth/invalid-email"

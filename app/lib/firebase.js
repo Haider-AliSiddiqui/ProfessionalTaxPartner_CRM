@@ -28,4 +28,18 @@ const app =
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Sent with every password-reset email. Firebase validates that this URL's
+// domain is listed under Authentication -> Settings -> Authorized domains, and
+// it is where the user lands after choosing a new password. The browser-only
+// origin is used in the app, with a production fallback for non-browser code.
+const continueOrigin =
+  typeof window !== "undefined" && window.location?.origin
+    ? window.location.origin
+    : `https://${firebaseConfig.authDomain}`;
+
+export const passwordResetSettings = {
+  url: `${continueOrigin}/login`,
+  handleCodeInApp: false,
+};
+
 export { app, auth, db, firebaseConfig };
