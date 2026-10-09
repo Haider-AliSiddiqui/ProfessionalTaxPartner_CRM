@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { CrmWorkspace } from "../../page";
-import { auth } from "@/app/lib/firebase";
+import { subscribeToAuthUser } from "@/app/lib/firebase";
 import { getCurrentProfile } from "@/app/lib/crm-data";
 import { normalizeRole, roleLabel, rolePermissions } from "@/app/lib/roles";
 
@@ -15,11 +14,49 @@ const portalRoles = {
   "jn-technical": "jn_technical",
 };
 
+// The role -> session mapping is pure, so a returning visitor can render the
+// workspace shell from this in-memory copy while the profile check runs in the
+// background. Keeps repeat visits instant instead of showing a blank screen.
+let lastSession = null;
+
+function sessionFromProfile(uid, profile, role) {
+  return {
+    uid,
+    name: profile.name,
+    email: profile.email,
+    role,
+    roleLabel: roleLabel(role),
+    permissions: Array.isArray(profile.permissions)
+      ? profile.permissions
+      : rolePermissions[role] || [],
+  };
+}
+
+async function loadSession(user, expectedRole) {
+  const profile = await getCurrentProfile(user);
+  if (profile.status !== "active") return { status: "deactivated", session: null };
+  if (normalizeRole(profile.role) !== expectedRole) return { status: "denied", session: null };
+  const session = sessionFromProfile(user.uid, profile, expectedRole);
+  lastSession = { uid: user.uid, role: expectedRole, session };
+  return { status: "allowed", session };
+}
+
 export default function DashboardPage() {
   const { portal } = useParams();
   const router = useRouter();
-  const [state, setState] = useState({ status: "loading", session: null });
   const expectedRole = portalRoles[portal];
+  const [state, setState] = useState(() => {
+    if (!expectedRole || !lastSession || lastSession.role !== expectedRole) {
+      return { status: "loading", session: null };
+    }
+    return { status: "allowed", session: lastSession.session };
+  });
+
+  // State is mirrored in a ref so the auth subscription is never torn down and
+  // re-created just because the status changed (which would re-trigger the
+  // profile read).
+  const stateRef = useRef(null);
+  stateRef.current = state;
 
   useEffect(() => {
     if (!expectedRole) {
@@ -27,36 +64,28 @@ export default function DashboardPage() {
       return undefined;
     }
 
-    return onAuthStateChanged(auth, async (user) => {
+    let cancelled = false;
+    return subscribeToAuthUser(async (user) => {
       if (!user) {
+        stateRef.current = { status: "loading", session: null };
         router.replace("/login");
         return;
       }
+      // Re-mounting the workspace for the same account would wipe its state, so
+      // a repeat event for the user already on screen is ignored.
+      if (
+        stateRef.current?.status === "allowed" &&
+        lastSession?.uid === user.uid &&
+        lastSession.role === expectedRole
+      ) {
+        return;
+      }
       try {
-        const profile = await getCurrentProfile(user);
-        if (profile.status !== "active") {
-          setState({ status: "deactivated", session: null });
-          return;
-        }
-        if (normalizeRole(profile.role) !== expectedRole) {
-          setState({ status: "denied", session: null });
-          return;
-        }
-        setState({
-          status: "allowed",
-          session: {
-            uid: user.uid,
-            name: profile.name,
-            email: profile.email,
-            role: expectedRole,
-            roleLabel: roleLabel(expectedRole),
-            permissions: Array.isArray(profile.permissions)
-              ? profile.permissions
-              : rolePermissions[expectedRole] || [],
-          },
-        });
+        const next = await loadSession(user, expectedRole);
+        stateRef.current = next;
+        if (!cancelled) setState(next);
       } catch {
-        router.replace("/login");
+        if (!cancelled) router.replace("/login");
       }
     });
   }, [expectedRole, router]);

@@ -11,6 +11,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  or,
   query,
   runTransaction,
   serverTimestamp,
@@ -31,9 +32,37 @@ import {
 
 const roleOrder = ["admin", "sub_admin", "senior_technical", "jn_technical"];
 const employeeAuthAppName = "crm-employee-provisioning";
+// Firestore on a warm connection costs one network round-trip (~150-400ms) per
+// read. A single dashboard refresh used to issue 10-20 of them because the
+// signed-in user's profile was re-fetched on every call and every view change.
+// These two caches remove the repeat reads: the profile is fetched once per
+// session, and the role-scoped record set is reused for a short window (see
+// CACHE_TTL_MS) so switching tabs paints immediately instead of waiting on
+// the network again.
+const CACHE_TTL_MS = 30000;
+let profileCache = null;
+let recordsCache = null;
+
+function clearCaches() {
+  profileCache = null;
+  recordsCache = null;
+}
 
 function recordFromSnapshot(snapshot) {
   return { id: snapshot.id, ...snapshot.data() };
+}
+
+// Splits a value list into "in" filter groups. Firestore caps an "in" filter at
+// 30 values and rejects an empty one outright:
+// https://firebase.google.com/docs/firestore/query-data/queries#in_not-in_and_array-contains-any
+// Both limits are enforced in one place so no caller can send a malformed query.
+function chunkValues(values, size) {
+  const unique = [...new Set((values || []).filter((value) => value != null))];
+  const chunks = [];
+  for (let index = 0; index < unique.length; index += size) {
+    chunks.push(unique.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function workShiftFromTime(workTime) {
@@ -80,8 +109,7 @@ function normalizeDigitField(value, label, length) {
   return normalized;
 }
 
-async function requireActiveProfile(uid) {
-  const snapshot = await getDoc(doc(db, "users", uid));
+function profileFromSnapshot(snapshot, uid) {
   if (!snapshot.exists()) {
     throw new Error("Account profile not found. Contact your administrator.");
   }
@@ -94,12 +122,89 @@ async function requireActiveProfile(uid) {
   return { uid, ...profile, role: normalizeRole(profile.role) };
 }
 
+async function requireActiveProfile(uid) {
+  if (profileCache && profileCache.uid === uid) return profileCache;
+  const profile = profileFromSnapshot(await getDoc(doc(db, "users", uid)), uid);
+  profileCache = profile;
+  return profile;
+}
+
+// Builds the profile object returned by requireActiveProfile() without any
+// network read. Callers that have already fetched their own profile document
+// (the dashboard, before it mounts the workspace) hydrate the cache with this so
+// the first workspace refresh does not read the same document a second time.
+export function primeProfileCache(profile) {
+  if (profile?.uid) profileCache = profile;
+}
+
+// Points the data layer's cached profile at the signed-in user, reading it only
+// when the cache is cold or holds a different account. Returns the profile so
+// callers can gate on its role/status without a second read.
+export async function useProfile(user) {
+  if (!user) throw new Error("Your Firebase sign-in is not ready. Please sign in again.");
+  return requireActiveProfile(user.uid);
+}
+
+// The team list is read by filtered query rather than by walking the
+// managerUid/createdBy chain: a Sub Admin may see every Senior Technical and JN
+// Technical employee (see the canListTeam/canReadUser scope in firestore.rules),
+// and a chain walk would hide lower-ranked staff whose managerUid points at
+// someone else, leaving the Team view dropdown empty. The filter is also what
+// makes the read legal — a Sub Admin has no blanket permission to list /users.
+// Both reads compare the role field against a value list, and Firestore rejects
+// an "in" filter whose array is empty. Deriving the arrays below from roleOrder
+// means neither can ever be empty, whatever the order is edited to.
+const teamRoleFilter = ["senior_technical", "jn_technical"];
+const anyRoleFilter = [...roleOrder];
+
+function assertQueryValues(label, values) {
+  if (!values.length) throw new Error(`Cannot list users: ${label} is empty.`);
+  return values;
+}
+
+// Every employee is listed, never a capped first page: both queries filter on
+// `role`, so the role clause must stay in the query rather than be dropped for a
+// single-role caller. Dropping it while the rules require it (or leaving it out
+// entirely) is what produced Invalid Query errors before.
+function teamListQuery() {
+  return query(
+    collection(db, "users"),
+    where("role", "in", assertQueryValues("team role filter", teamRoleFilter)),
+    where("status", "==", "active"),
+  );
+}
+
+async function getTeamProfiles(profile) {
+  const snapshot = await getDocs(teamListQuery());
+  return snapshot.docs
+    .map((record) => ({ uid: record.id, ...record.data() }))
+    .filter(
+      (employee) =>
+        employee.uid !== profile.uid && isRoleBelow(profile.role, employee.role),
+    );
+}
+
+// The Admin directory: the whole role list rather than a per-caller subset, so
+// this stays the complete employee list no matter how many employees exist.
+async function getDirectoryProfiles(profile) {
+  const snapshot = await getDocs(
+    query(
+      collection(db, "users"),
+      where("role", "in", assertQueryValues("directory role filter", anyRoleFilter)),
+    ),
+  );
+  return snapshot.docs
+    .map((record) => ({ uid: record.id, ...record.data() }))
+    .filter((employee) => isRoleBelow(profile.role, employee.role));
+}
+
 async function getManagedProfiles(profile) {
   if (profile.role === "admin") {
-    const snapshot = await getDocs(collection(db, "users"));
-    return snapshot.docs
-      .map((record) => ({ uid: record.id, ...record.data() }))
-      .filter((employee) => isRoleBelow(profile.role, employee.role));
+    return getDirectoryProfiles(profile);
+  }
+
+  if (profile.role === "sub_admin") {
+    return getTeamProfiles(profile);
   }
 
   const found = new Map();
@@ -131,30 +236,29 @@ async function getManagedProfiles(profile) {
 
 async function getAssignableProfiles(profile) {
   if (profile.role === "sub_admin") {
-    const snapshot = await getDocs(
-      query(
-        collection(db, "users"),
-        where("role", "in", ["senior_technical", "jn_technical"]),
-      ),
-    );
-    return snapshot.docs.map((record) => ({ uid: record.id, ...record.data() }));
+    return getTeamProfiles(profile);
   }
   return getManagedProfiles(profile);
 }
 
 async function getClientRecords(profile, teamProfiles) {
+  const visibleUids = [...new Set([profile.uid, ...teamProfiles.map((employee) => employee.uid)])];
+  // Chunked "in" queries instead of one query per teammate: 40 employees used to
+  // mean 40 separate round-trips competing for the same socket, which is what
+  // made the dashboard feel stalled. Firestore allows 30 values per "in" query.
+  // visibleUids always contains at least the caller, so this clamp only guards
+  // against a caller with no UID — the empty "in" filter would otherwise throw
+  // and take the whole clients read down with it.
+  const chunks = chunkValues([...new Set(visibleUids)], 30);
+  if (!chunks.length) return [];
   const snapshots =
     profile.role === "admin"
       ? [await getDocs(collection(db, "clients"))]
       : await Promise.all(
-          [...new Set([profile.uid, ...teamProfiles.map((employee) => employee.uid)])].map(
-            (uid) =>
-              getDocs(
-                query(
-                  collection(db, "clients"),
-                  where("assignedTo", "==", uid),
-                ),
-              ),
+          chunks.map((chunk) =>
+            getDocs(
+              query(collection(db, "clients"), where("assignedTo", "in", chunk)),
+            ),
           ),
         );
   const names = new Map(
@@ -197,8 +301,45 @@ async function getEmployees(profile) {
   if (!allowed) {
     throw new Error("You are not authorized to view employee records.");
   }
-  const employees = await getManagedProfiles(profile);
+  // The whole directory is readable by an Admin that holds manage_employees (see
+  // canListEmployees in firestore.rules); every other role is scoped to the
+  // technical roles it may actually see, so its list stays a team list.
+  const employees = profile.role === "admin"
+    ? await getDirectoryProfiles(profile)
+    : await getTeamProfiles(profile);
   return employees.filter((employee) => employee.uid !== profile.uid);
+}
+
+// One role-scoped read shared by every GET. The workspace renders Overview,
+// Clients, Employees, Payments and Reports from the same client/payment/employee
+// set, so re-reading all of it for each nav change only added latency.
+function cachedRecords(profile) {
+  if (
+    recordsCache &&
+    recordsCache.uid === profile.uid &&
+    Date.now() - recordsCache.at < CACHE_TTL_MS
+  ) {
+    return recordsCache.value;
+  }
+  return null;
+}
+
+async function loadRecords(profile) {
+  const cached = cachedRecords(profile);
+  if (cached) return cached;
+
+  const assignmentProfiles = await getAssignableProfiles(profile);
+  const clients = await getClientRecords(profile, assignmentProfiles);
+  // The same profile document is read several times while assembling a scope
+  // (client reads, service scope, assignment targets). Awaiting each one in
+  // sequence doubled the perceived load time; the union keeps them concurrent.
+  const [services, payments] = await Promise.all([
+    getServices(profile, assignmentProfiles, clients),
+    getPayments(profile, clients, assignmentProfiles),
+  ]);
+  const value = { clients, services, payments, assignmentProfiles };
+  recordsCache = { uid: profile.uid, at: Date.now(), value };
+  return value;
 }
 
 async function getServices(profile, teamProfiles, clients) {
@@ -206,31 +347,32 @@ async function getServices(profile, teamProfiles, clients) {
     const snapshot = await getDocs(collection(db, "services"));
     if (snapshot.size) return snapshot.docs.map(recordFromSnapshot);
   } else {
-    const visibleUids = [profile.uid, ...teamProfiles.map(({ uid }) => uid)];
-    const clientIds = clients.map(({ id }) => id);
-    const reads = [
-      ...visibleUids.flatMap((uid) => [
-        getDocs(
-          query(collection(db, "services"), where("createdBy", "==", uid)),
-        ),
-        getDocs(
-          query(collection(db, "services"), where("assignedTo", "==", uid)),
-        ),
-      ]),
-      ...clientIds.map((clientId) =>
-        getDocs(
-          query(collection(db, "services"), where("clientId", "==", clientId)),
-        ),
-      ),
-    ];
-    const snapshots = await Promise.all(reads);
-    const stored = new Map();
-    for (const snapshot of snapshots) {
+    const visibleUids = chunkValues([profile.uid, ...teamProfiles.map(({ uid }) => uid)], 30);
+    const clientIds = chunkValues(clients.map(({ id }) => id), 30);
+    // At least one side of this OR must carry values: an "in" filter with an
+    // empty array is rejected by Firestore before the query is even sent.
+    if (visibleUids.length || clientIds.length) {
+      // One "in" query per side (createdBy OR assignedTo OR clientId) replaces
+      // the old per-user / per-client fan-out, which reached hundreds of reads.
+      const clauses = [];
+      for (const chunk of visibleUids) {
+        clauses.push(where("createdBy", "in", chunk));
+        clauses.push(where("assignedTo", "in", chunk));
+      }
+      for (const chunk of clientIds) {
+        clauses.push(where("clientId", "in", chunk));
+      }
+      const snapshot = await getDocs(
+        clauses.length === 1
+          ? query(collection(db, "services"), clauses[0])
+          : query(collection(db, "services"), or(...clauses)),
+      );
+      const stored = new Map();
       for (const record of snapshot.docs) {
         stored.set(record.id, recordFromSnapshot(record));
       }
+      if (stored.size) return [...stored.values()];
     }
-    if (stored.size) return [...stored.values()];
   }
 
   const summaries = new Map();
@@ -252,14 +394,14 @@ async function getServices(profile, teamProfiles, clients) {
 }
 
 async function getPayments(profile, clients, teamProfiles) {
+  const clientChunks = chunkValues(clients.map(({ id }) => id), 30);
+  if (!clientChunks.length && profile.role !== "admin") return [];
   const snapshots =
     profile.role === "admin"
       ? [await getDocs(collection(db, "payments"))]
       : await Promise.all(
-          clients.map(({ id }) =>
-            getDocs(
-              query(collection(db, "payments"), where("clientId", "==", id)),
-            ),
+          clientChunks.map((chunk) =>
+            getDocs(query(collection(db, "payments"), where("clientId", "in", chunk))),
           ),
         );
   const recorders = new Map(
@@ -864,39 +1006,28 @@ async function createPayment(caller, input) {
 }
 
 async function dispatch(profile, path, method, input) {
-  const assignmentProfiles =
-    path === "employees" || path === "clients" || path === "payments" || path === "services"
-      ? await getAssignableProfiles(profile)
-      : null;
-  const clients =
-    path === "clients" || path === "payments" || path === "services"
-      ? await getClientRecords(profile, assignmentProfiles || [])
-      : null;
+  const needsRecords =
+    method === "GET" ||
+    (method === "POST" && (path === "services" || path === "payments")) ||
+    (method === "PATCH" && path === "clients");
+  const records = needsRecords ? await loadRecords(profile) : null;
 
   if (method === "GET" && path === "employees") {
     return {
       employees: await getEmployees(profile),
-      assignableEmployees: assignmentProfiles.filter(
+      assignableEmployees: records.assignmentProfiles.filter(
         (employee) => employee.uid !== profile.uid,
       ),
     };
   }
   if (method === "GET" && path === "clients") {
-    return { clients };
+    return { clients: records.clients };
   }
   if (method === "GET" && path === "services") {
-    return {
-      services: await getServices(profile, assignmentProfiles, clients),
-    };
+    return { services: records.services };
   }
   if (method === "GET" && path === "payments") {
-    return {
-      payments: await getPayments(
-        profile,
-        clients,
-        assignmentProfiles || [],
-      ),
-    };
+    return { payments: records.payments };
   }
   if (method === "POST" && path === "employees") {
     return createEmployee(profile, input);
@@ -905,13 +1036,19 @@ async function dispatch(profile, path, method, input) {
     return updateEmployee(profile, input);
   }
   if (method === "POST" && path === "clients") {
-    return createClient(profile, input);
+    const created = await createClient(profile, input);
+    clearCaches();
+    return created;
   }
   if (method === "PATCH" && path === "clients") {
-    return updateClient(profile, input);
+    const updated = await updateClient(profile, input);
+    clearCaches();
+    return updated;
   }
   if (method === "POST" && path === "payments") {
-    return createPayment(profile, input);
+    const created = await createPayment(profile, input);
+    clearCaches();
+    return created;
   }
   if (method === "POST" && path === "services") {
     if (!hasPermission(profile, "manage_clients")) {
@@ -932,6 +1069,7 @@ async function dispatch(profile, path, method, input) {
     };
     const serviceRef = doc(collection(db, "services"));
     await setDoc(serviceRef, service);
+    clearCaches();
     return { service: { id: serviceRef.id, ...service, createdAt: null } };
   }
   throw new Error("Unsupported Firebase data operation.");
@@ -939,8 +1077,17 @@ async function dispatch(profile, path, method, input) {
 
 export async function crmRequest(user, path, method = "GET", input = {}) {
   if (!user) throw new Error("Your Firebase sign-in is not ready. Please sign in again.");
-  const profile = await requireActiveProfile(user.uid);
-  return dispatch(profile, path, method, input);
+  const uid = user.uid;
+  const profile = await requireActiveProfile(uid);
+  const result = await dispatch(profile, path, method, input);
+  if (method !== "GET" && path === "employees") clearCaches();
+  return result;
+}
+
+// Called when the signed-in account changes (sign-in / sign-out) so a previous
+// session's cached profile and records can never be shown to the next one.
+export function resetSessionCache() {
+  clearCaches();
 }
 
 export async function sendEmployeePasswordReset(email) {
@@ -1029,7 +1176,11 @@ export async function getCurrentProfile(user) {
   if (!user) throw new Error("Sign in to continue.");
   const snapshot = await getDoc(doc(db, "users", user.uid));
   if (!snapshot.exists()) throw new Error("Account profile not found.");
-  return { uid: user.uid, ...snapshot.data(), role: normalizeRole(snapshot.data().role) };
+  const profile = { uid: user.uid, ...snapshot.data(), role: normalizeRole(snapshot.data().role) };
+  // Hand the already-fetched profile to the data layer, so mounting the
+  // workspace right afterwards does not read the same document again.
+  primeProfileCache(profile);
+  return profile;
 }
 
 export async function getBootstrapStatus() {

@@ -1,6 +1,7 @@
 import { getApps, initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { resetSessionCache } from "./crm-data.js";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyDBY_yf9bL0_W2utjKGDP4CI2A7xPbcJDI",
@@ -27,6 +28,35 @@ const app =
   initializeApp(firebaseConfig, appName);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Both the login screen and the portal dashboard used to subscribe to auth
+// separately, so every navigation duplicated the queued ID-token and profile
+// lookups. One shared subscription (created on the first call, reused after)
+// lets a late subscriber read the already-resolved user instead of paying for
+// another round-trip.
+let authListener = null;
+let currentAuthUser;
+let authResolved = false;
+
+function startAuthListener() {
+  if (authListener) return;
+  authListener = { callbacks: new Set() };
+  onAuthStateChanged(auth, (user) => {
+    if (user?.uid !== currentAuthUser?.uid) resetSessionCache();
+    currentAuthUser = user;
+    authResolved = true;
+    authListener.callbacks.forEach((callback) => callback(user));
+  });
+}
+
+// Mirrors onAuthStateChanged(auth, callback) but replays the current user when
+// auth has already settled. Returns an unsubscribe function.
+export function subscribeToAuthUser(callback) {
+  startAuthListener();
+  authListener.callbacks.add(callback);
+  if (authResolved) callback(currentAuthUser);
+  return () => authListener.callbacks.delete(callback);
+}
 
 // Sent with every password-reset email. Firebase validates that this URL's
 // domain is listed under Authentication -> Settings -> Authorized domains, and

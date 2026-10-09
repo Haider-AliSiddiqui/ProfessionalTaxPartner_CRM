@@ -2,14 +2,36 @@
 
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { auth } from "./lib/firebase";
+import { signOut } from "firebase/auth";
+import { auth, subscribeToAuthUser } from "./lib/firebase";
 import { crmRequest } from "./lib/crm-data";
 import BrandLogo from "./brand-logo";
 
 const navItems = [
   ["Overview", "grid"], ["Clients", "users"], ["Employees", "briefcase"], ["Services", "layers"], ["Payments", "wallet"], ["Reports", "chart"], ["Excel records", "file"],
 ];
+
+// How long a fetched record set stays fresh. Switching between Overview and
+// Clients, or re-opening a tab, no longer re-reads collections that were just
+// loaded; an edit forces an immediate re-read instead (see refreshRecords).
+const RECORD_CACHE_MS = 45000;
+// Rendering every row of a large client table (14 columns each) is what makes
+// the UI itself feel slow, so tables paint this many rows and load the rest on
+// demand. Exports and search still run against the full record set.
+const TABLE_PAGE_SIZE = 50;
+
+// Firestore reads each view needs. "Overview" and "Clients" render the same
+// client list, so both reuse the cached clients read instead of paying for the
+// network again on every tab switch.
+const sectionDataPlan = {
+  Overview: ["clients", "employees"],
+  Clients: ["clients"],
+  Employees: ["employees"],
+  Services: ["services"],
+  Payments: ["payments"],
+  Reports: ["clients", "payments"],
+  "Excel records": ["clients"],
+};
 
 function Icon({ name, size = 18 }) {
   const paths = {
@@ -105,6 +127,18 @@ function LiveOverview({ clients, isLoading }) {
   </section>;
 }
 
+function amountTone(value) {
+  const amount = Number(value) || 0;
+  if (amount > 0) return "money-cell";
+  return "money-cell money-zero";
+}
+
+function pendingTone(value) {
+  const amount = Number(value) || 0;
+  if (amount > 0) return "money-cell money-pending";
+  return "money-cell money-zero";
+}
+
 function downloadExcelRecords(records) {
   const headers = ["S.NO", "Date", "Shift", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Description", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
   const rows = records.map((client, index) => [index + 1, client.date || "", workShiftLabel(client), client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.description || "", client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
@@ -167,6 +201,47 @@ function PasswordField({ label, value, onChange, placeholder, minLength = 8, nam
   );
 }
 
+const roleNames = { sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
+
+// The Team view is built from the employee list, so a denied or failing employee
+// read used to render as "No team members in your scope" — which reads as "your
+// team is empty" even when the team exists and only the read failed. Track that
+// state separately so the header can say what actually happened.
+function emptyTeamNotice(session, error, hasLoaded) {
+  if (!hasLoaded) return "Loading team...";
+  const role = session?.role;
+  if (role !== "sub_admin" && role !== "senior_technical") {
+    return "No team members in your scope";
+  }
+  const canReadTeam = [
+    "manage_lower_employees",
+    "manage_junior_employees",
+    "manage_assignments",
+  ].some((permission) => session.permissions?.includes(permission));
+  if (!canReadTeam) return "No team members in your scope";
+  if (error) return "Team list could not load. Check your connection and refresh.";
+  return "No team members yet — ask your Admin to assign staff under your account.";
+}
+
+// Firestore stores the role code; the UI shows the label. Normalised once here
+// so both the section refresh and the team-list load agree.
+function formatEmployee(employee) {
+  return {
+    ...employee,
+    roleCode: employee.role,
+    role: roleNames[employee.role] || employee.role,
+    status: employee.status === "active" ? "Active" : "Inactive",
+    initials: employee.name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "",
+  };
+}
+
+async function loadTeamList(user, requestApi, recordCacheRef, setEmployeeRecords, setAssignableEmployeeRecords) {
+  const result = await requestApi("employees", "GET", undefined, user);
+  recordCacheRef.current.employees = Date.now();
+  setEmployeeRecords(result.employees.map(formatEmployee));
+  setAssignableEmployeeRecords((result.assignableEmployees || result.employees).map(formatEmployee));
+}
+
 function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview, isAdmin }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
@@ -179,20 +254,63 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
   const meta = sectionMeta[section] || sectionMeta.Clients;
   const [permissionEmployeeUid, setPermissionEmployeeUid] = useState("");
   const [permissionDrafts, setPermissionDrafts] = useState([]);
+  // Tables paint this many rows at a time. A 14-column table with thousands of
+  // rows is what makes the page (not the network) feel frozen while typing.
+  // Resetting the window is derived from the current filters instead of an
+  // effect, so switching tabs or searching never triggers a cascading render.
+  const [rowWindow, setRowWindow] = useState({ key: "", count: TABLE_PAGE_SIZE });
+  const rowWindowKey = `${section}|${query}`;
+  const visibleRowCount = rowWindow.key === rowWindowKey ? rowWindow.count : TABLE_PAGE_SIZE;
+  const showMoreRows = () => setRowWindow({ key: rowWindowKey, count: visibleRowCount + TABLE_PAGE_SIZE });
+
   const normalizedQuery = query.toLowerCase();
   const scopedEmployees = employeeRecords;
-  const matchingClients = clients.filter((client) => `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery));
-  const filteredClients = section === "Excel records"
-    ? matchingClients.filter((client) => client.status === "Completed")
-    : section === "Clients"
-      ? matchingClients.filter((client) => client.status !== "Completed")
-      : matchingClients;
-  const filteredEmployees = scopedEmployees.filter((employee) => `${employee.name} ${employee.role}`.toLowerCase().includes(normalizedQuery));
-  const filteredServices = serviceRecords.filter((service) => `${service.name} ${service.category}`.toLowerCase().includes(normalizedQuery));
-  const filteredPayments = paymentRecords.filter((payment) => `${payment.clientName} ${payment.date}`.toLowerCase().includes(normalizedQuery));
-  const roleNames = { sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
-  const activeAssignableEmployees = assignableEmployees.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role));
+  const matchingClients = useMemo(
+    () => clients.filter((client) => `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
+    [clients, normalizedQuery],
+  );
+  const filteredClients = useMemo(() => (
+    section === "Excel records"
+      ? matchingClients.filter((client) => client.status === "Completed")
+      : section === "Clients"
+        ? matchingClients.filter((client) => client.status !== "Completed")
+        : matchingClients
+  ), [matchingClients, section]);
+  // Memoized so typing in the search box only re-filters, instead of also
+  // rebuilding every row of every table on each keystroke.
+  const filteredEmployees = useMemo(
+    () => scopedEmployees.filter((employee) => `${employee.name} ${employee.role}`.toLowerCase().includes(normalizedQuery)),
+    [scopedEmployees, normalizedQuery],
+  );
+  const filteredServices = useMemo(
+    () => serviceRecords.filter((service) => `${service.name} ${service.category}`.toLowerCase().includes(normalizedQuery)),
+    [serviceRecords, normalizedQuery],
+  );
+  const filteredPayments = useMemo(
+    () => paymentRecords.filter((payment) => `${payment.clientName} ${payment.date}`.toLowerCase().includes(normalizedQuery)),
+    [paymentRecords, normalizedQuery],
+  );
+  const activeAssignableEmployees = useMemo(
+    () => assignableEmployees.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role)),
+    [assignableEmployees, employeeRoleOptions],
+  );
+
+  // "Assigned clients" used to re-scan the whole client list once per employee
+  // row (O(employees x clients)); one pass over the clients gives every count.
+  const clientsPerAssignee = useMemo(() => {
+    const counts = new Map();
+    for (const client of clients) {
+      counts.set(client.assignedTo, (counts.get(client.assignedTo) || 0) + 1);
+    }
+    return counts;
+  }, [clients]);
   const showAction = !readOnlyPreview && ((section === "Employees" && canManageEmployees) || (section === "Clients" && canAddClient) || (section === "Services" && canManageServices) || (section === "Payments" && clients.length > 0));
+
+  const tableRows = filteredClients.slice(0, visibleRowCount);
+  const hasMoreRows = filteredClients.length > tableRows.length;
+  const moreRows = hasMoreRows
+    ? <button type="button" className="secondary-button load-more-button" onClick={showMoreRows}>Show {Math.min(TABLE_PAGE_SIZE, filteredClients.length - tableRows.length)} more of {filteredClients.length} records</button>
+    : null;
 
   return <section className="workspace-view">
     <div className="workspace-header"><div><p className="eyebrow">{role} workspace</p><h2>{meta.title}</h2><p>{meta.subtitle}</p></div>{section === "Excel records" ? <button className="primary-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={16} /> {meta.action}</button> : showAction && <button className="primary-button" onClick={() => onAction(section === "Employees" ? "employee" : section === "Clients" ? "client" : section === "Services" ? "service" : "payment")}><Icon name="plus" size={17} /> {meta.action}</button>}</div>
@@ -200,15 +318,15 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     <div className="panel workspace-panel"><div className="workspace-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${section.toLowerCase()}...`} /></div><button className="filter-button">Filter <span>⌄</span></button></div>
       {section === "Clients" && !readOnlyPreview && filteredClients.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); const formData = new FormData(event.currentTarget); const client = clients.find((item) => item.id === formData.get("clientId")); if (client) onClientStatusChange(client, formData.get("status")); }}><label>Client work status<select name="clientId" required defaultValue="">{filteredClients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.work || client.provider}</option>)}</select></label><label>Status<select name="status" defaultValue="Pending">{["New", "Pending", "In Progress", "Completed", "Cancelled"].map((status) => <option key={status}>{status}</option>)}</select></label><div className="modal-actions"><button className="primary-button">Update work status</button></div></form>}
       {section === "Clients" && !readOnlyPreview && activeAssignableEmployees.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); const formData = new FormData(event.currentTarget); onClientTransfer(formData.get("clientId"), formData.get("assignedTo")); }}><label>Client to reassign<select name="clientId" required defaultValue="">{filteredClients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.owner}</option>)}</select></label><label>New assignee<select name="assignedTo" required defaultValue="">{activeAssignableEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label><div className="modal-actions"><button className="primary-button">Reassign client</button></div></form>}
-      {section === "Employees" && <div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Assigned clients</th><th>Account status</th><th>Created by</th>{!readOnlyPreview && <th>Actions</th>}</tr></thead><tbody>{filteredEmployees.map((employee) => <tr key={employee.uid}><td><div className="client-cell"><div className="client-avatar mint">{employee.initials}</div><div><strong>{employee.name}</strong><span>{employee.email}</span></div></div></td><td>{employee.role}</td><td>{clients.filter((client) => client.assignedTo === employee.uid).length} clients</td><td><span className={`status-badge ${employee.status === "Active" ? "completed" : "pending"}`}><i />{employee.status}</span></td><td>{employee.createdBy === currentUid ? "You" : employee.createdBy}</td>{!readOnlyPreview && <td><button className="text-button" onClick={() => onEditEmployee(employee)}>Edit</button><button className="text-button" onClick={() => onResetEmployeePassword(employee)}>Reset password</button><button className="secondary-button" onClick={() => onEmployeeStatusChange(employee, employee.status === "Active" ? "inactive" : "active")}>{employee.status === "Active" ? "Deactivate" : "Activate"}</button></td>}</tr>)}</tbody></table></div>}
+      {section === "Employees" && <div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Assigned clients</th><th>Account status</th><th>Created by</th>{!readOnlyPreview && <th>Actions</th>}</tr></thead><tbody>{filteredEmployees.map((employee) => <tr key={employee.uid}><td><div className="client-cell"><div className="client-avatar mint">{employee.initials}</div><div><strong>{employee.name}</strong><span>{employee.email}</span></div></div></td><td>{employee.role}</td><td>{clientsPerAssignee.get(employee.uid) || 0} clients</td><td><span className={`status-badge ${employee.status === "Active" ? "completed" : "pending"}`}><i />{employee.status}</span></td><td>{employee.createdBy === currentUid ? "You" : employee.createdBy}</td>{!readOnlyPreview && <td><button className="text-button" onClick={() => onEditEmployee(employee)}>Edit</button><button className="text-button" onClick={() => onResetEmployeePassword(employee)}>Reset password</button><button className="secondary-button" onClick={() => onEmployeeStatusChange(employee, employee.status === "Active" ? "inactive" : "active")}>{employee.status === "Active" ? "Deactivate" : "Activate"}</button></td>}</tr>)}</tbody></table></div>}
       {section === "Employees" && !readOnlyPreview && canManagePermissions && filteredEmployees.length > 0 && <form className="form-grid employee-form" onSubmit={(event) => { event.preventDefault(); onEmployeePermissionsChange(permissionEmployeeUid, permissionDrafts); }}>
         <label>Employee permissions<select required value={permissionEmployeeUid} onChange={(event) => { const employee = filteredEmployees.find((item) => item.uid === event.target.value); setPermissionEmployeeUid(event.target.value); setPermissionDrafts(employee?.permissions || []); }}><option value="">Choose employee</option>{filteredEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name}</option>)}</select></label>
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{filteredClients.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className="money-cell">{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table></div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={amountTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
-      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{filteredClients.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className="money-cell">{formatMoney(client.received)}</td><td className="money-cell">{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table></div>}
+      {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{tableRows.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className={amountTone(client.received)}>{formatMoney(client.received)}</td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
       {section === "Reports" && <div className="empty-workspace"><div className="workspace-icon"><Icon name="chart" size={24} /></div><h3>Authorized operations report</h3><p>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received.</p><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>}
       {((section === "Employees" && filteredEmployees.length === 0) || (section === "Clients" && filteredClients.length === 0) || (section === "Services" && filteredServices.length === 0)) && <div className="empty-state">No authorized {section.toLowerCase()} match this search.</div>}
@@ -222,6 +340,7 @@ export function CrmWorkspace({ initialSession }) {
   });
   const role = session?.roleLabel || "Admin";
   const [teamView, setTeamView] = useState("All teams");
+  const canPreviewTeam = session?.role !== "jn_technical";
   const [activeNav, setActiveNav] = useState("Overview");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All clients");
@@ -262,41 +381,41 @@ export function CrmWorkspace({ initialSession }) {
     return true;
   });
 
+  // Timestamps of the last successful read of each record set, keyed by
+  // endpoint. Kept in a ref so refreshing does not re-create the callbacks.
+  const recordCacheRef = useRef({});
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const requestApi = useCallback(
     (path, method = "GET", body, user = firebaseUser) =>
       crmRequest(user, path, method, body),
     [firebaseUser],
   );
 
-  const refreshRecords = useCallback(async (user, section) => {
+  const refreshRecords = useCallback(async (user, section, { force = false } = {}) => {
+    const endpoints = { clients: "clients", employees: "employees", services: "services", payments: "payments" };
+    const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
+      .some((permission) => session.permissions.includes(permission));
+    const requestedData = (sectionDataPlan[section] || ["clients"])
+      .filter((key) => key !== "employees" || canViewEmployees);
+
+    const now = Date.now();
+    const stale = requestedData.filter((key) => force || !recordCacheRef.current[key] || now - recordCacheRef.current[key] >= RECORD_CACHE_MS);
+    if (stale.length === 0) return;
+
+    setIsRefreshing(true);
     try {
-      const sectionData = {
-        Overview: session.role === "admin" ? ["clients", "employees"] : ["clients"],
-        Clients: ["clients", "employees"],
-        Employees: ["clients", "employees"],
-        Services: ["services"],
-        Payments: ["clients", "payments"],
-        Reports: ["clients", "payments"],
-        "Excel records": ["clients"],
-      };
-      const endpoints = {
-        clients: "clients",
-        employees: "employees",
-        services: "services",
-        payments: "payments",
-      };
-      const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
-        .some((permission) => session.permissions.includes(permission));
-      const requestedData = (sectionData[section] || ["clients"])
-        .filter((key) => key !== "employees" || canViewEmployees);
-      const settledResults = await Promise.allSettled(requestedData.map((key) => requestApi(endpoints[key], "GET", undefined, user)));
+      const settledResults = await Promise.allSettled(stale.map((key) => requestApi(endpoints[key], "GET", undefined, user)));
       const results = Object.fromEntries(settledResults.map((result, index) => [
-        requestedData[index],
+        stale[index],
         result.status === "fulfilled" ? result.value : null,
       ]));
       const failures = settledResults.flatMap((result, index) => result.status === "rejected"
-        ? [`${requestedData[index]}: ${result.reason?.message || "Unknown error"}`]
+        ? [`${stale[index]}: ${result.reason?.message || "Unknown error"}`]
         : []);
+      settledResults.forEach((result, index) => {
+        if (result.status === "fulfilled") recordCacheRef.current[stale[index]] = Date.now();
+      });
       const { clients: clientResult, employees: employeeResult, services: serviceResult, payments: paymentResult } = results;
 
       if (clientResult) {
@@ -313,13 +432,6 @@ export function CrmWorkspace({ initialSession }) {
         })).sort((first, second) => String(second.date || "").localeCompare(String(first.date || ""))));
       }
       if (employeeResult) {
-        const formatEmployee = (employee) => ({
-          ...employee,
-          roleCode: employee.role,
-          role: ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[employee.role] || employee.role,
-          status: employee.status === "active" ? "Active" : "Inactive",
-          initials: employee.name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "",
-        });
         setEmployeeRecords(employeeResult.employees.map(formatEmployee));
         setAssignableEmployeeRecords(
           (employeeResult.assignableEmployees || employeeResult.employees).map(formatEmployee),
@@ -335,36 +447,127 @@ export function CrmWorkspace({ initialSession }) {
       }
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
-  }, [requestApi, session.permissions, session.role]);
+  }, [requestApi, session.permissions]);
+
+  // Record sets are cached for a short window, so the tab that is actually on
+  // screen decides what to load: it blocks on its own data the first time, then
+  // silently revalidates once the data is stale instead of freezing the view.
+  const loadSection = useCallback(async (user, section, { force = false, withTeam = false } = {}) => {
+    if (force) recordCacheRef.current = {};
+    const now = Date.now();
+    const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
+      .some((permission) => session.permissions.includes(permission));
+    const requestedData = (sectionDataPlan[section] || ["clients"])
+      .filter((key) => key !== "employees" || canViewEmployees);
+
+    // The team list backs the Team view dropdown on every section, so the first
+    // load of a session always fetches it — separately from the section's own
+    // data, because it returns two lists (managed + assignable) the generic
+    // endpoint handling does not know about.
+    const teamIsStale = canViewEmployees && withTeam &&
+      (!recordCacheRef.current.employees || now - recordCacheRef.current.employees >= RECORD_CACHE_MS);
+
+    const isStale = (key) => !recordCacheRef.current[key] || now - recordCacheRef.current[key] >= RECORD_CACHE_MS;
+    if (teamIsStale || requestedData.some(isStale)) setIsLoading(true);
+
+    if (teamIsStale) {
+      // Started before awaiting the section reads so both hit the network in
+      // parallel rather than queueing behind each other.
+      await Promise.allSettled([
+        refreshRecords(user, section, { force }),
+        loadTeamList(user, requestApi, recordCacheRef, setEmployeeRecords, setAssignableEmployeeRecords),
+      ]);
+      return;
+    }
+    await refreshRecords(user, section, { force });
+  }, [refreshRecords, requestApi, session.permissions]);
+
+  const hasLoadedDataRef = useRef(false);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, setFirebaseUser);
-  }, []);
+    return subscribeToAuthUser((user) => {
+      // Switching accounts must never show the previous session's records.
+      if (user?.uid !== firebaseUser?.uid) {
+        recordCacheRef.current = {};
+        hasLoadedDataRef.current = false;
+      }
+      setFirebaseUser(user);
+    });
+  }, [firebaseUser?.uid]);
+
+  // Profile + first section load, started together instead of waiting on each
+  // other. The workspace is marked ready as soon as this settles, which is one
+  // batch of reads rather than the previous stack of sequential ones.
   useEffect(() => {
     if (!firebaseUser) return;
-    refreshRecords(firebaseUser, activeNav)
-      .catch((error) => setDataError(`Could not load authorized ${activeNav.toLowerCase()} records: ${error.message}`));
-  }, [firebaseUser, activeNav, refreshRecords]);
-  const previewEmployeeUids = useMemo(() => {
-    if (session.role !== "admin" || teamView === "All teams") return null;
-    const selectedEmployee = employeeRecords.find((employee) => employee.uid === teamView);
-    if (!selectedEmployee) return new Set();
+    let cancelled = false;
+    // The team list is loaded inline (rather than through the plain section
+    // refresh) because it returns two lists — managed and assignable — that the
+    // generic endpoint handling does not know about.
+    loadSection(firebaseUser, activeNav, { withTeam: true })
+      .catch((error) => setDataError(`Could not load authorized records: ${error.message}`))
+      .finally(() => {
+        if (cancelled) return;
+        hasLoadedDataRef.current = true;
+        setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseUser]);
 
-    const visibleUids = new Set([selectedEmployee.uid]);
-    let foundDescendant = true;
-    while (foundDescendant) {
-      foundDescendant = false;
+  useEffect(() => {
+    if (!firebaseUser || !hasLoadedDataRef.current) return;
+    loadSection(firebaseUser, activeNav)
+      .catch((error) => setDataError(`Could not load authorized ${activeNav.toLowerCase()} records: ${error.message}`));
+  }, [firebaseUser, activeNav, loadSection]);
+  // Admins, Sub Admins, and Senior Technicals can open a lower-ranked employee's
+  // view to inspect the work that employee owns (employers must match canReadUser
+  // in firestore.rules, so only directly-managed people appear here).
+  const teamViewEmployeeIds = useMemo(() => {
+    const ids = new Set();
+    let changed = true;
+    while (changed) {
+      changed = false;
       for (const employee of employeeRecords) {
-        if (visibleUids.has(employee.managerUid || employee.createdBy) && !visibleUids.has(employee.uid)) {
-          visibleUids.add(employee.uid);
-          foundDescendant = true;
+        if ((employee.uid === teamView || ids.has(employee.managerUid || employee.createdBy)) && !ids.has(employee.uid)) {
+          ids.add(employee.uid);
+          changed = true;
         }
       }
     }
-    return visibleUids;
-  }, [employeeRecords, session.role, teamView]);
-  const isAdminPreview = session.role === "admin" && teamView !== "All teams";
+    return ids;
+  }, [employeeRecords, teamView]);
+  const previewEmployeeUids = canPreviewTeam && teamView !== "All teams" ? teamViewEmployeeIds : null;
+  const isAdminPreview = canPreviewTeam && teamView !== "All teams";
+  // Employees a signed-in user may open in the Team view. Match the stored role
+  // code first and fall back to the display label, so an unexpected role casing
+  // never silently empties the dropdown. The teammate currently selected stays
+  // in the list even while the scoped record set is still loading.
+  const teamViewEmployees = useMemo(() => {
+    if (!canPreviewTeam) return [];
+    const canSeeEmployee = (employee) => {
+      if (session.role === "admin") return true;
+      const roleCode = employee.roleCode || employee.role;
+      if (session.role === "sub_admin") {
+        return roleCode === "senior_technical"
+          || roleCode === "jn_technical"
+          || employee.role === "Senior Technical"
+          || employee.role === "JN Technical";
+      }
+      return roleCode === "jn_technical" || employee.role === "JN Technical";
+    };
+    const options = employeeRecords.filter(canSeeEmployee);
+    if (!options.some((employee) => employee.uid === teamView)) {
+      const selected = employeeRecords.find((employee) => employee.uid === teamView);
+      if (selected) options.unshift(selected);
+    }
+    return options;
+  }, [canPreviewTeam, employeeRecords, session.role, teamView]);
+  const canOpenTeamView = canPreviewTeam && teamViewEmployees.length > 0;
   const scopedClients = useMemo(() => previewEmployeeUids
     ? clientRecords.filter((client) => previewEmployeeUids.has(client.assignedTo))
     : clientRecords, [clientRecords, previewEmployeeUids]);
@@ -419,7 +622,7 @@ export function CrmWorkspace({ initialSession }) {
     const received = Number(clientForm.received) || 0;
     setDataError("");
     try {
-      await requestApi("clients", "POST", {
+      const result = await requestApi("clients", "POST", {
         assignedTo: clientForm.assignedTo,
         date: clientForm.date,
         workTime: clientForm.workTime,
@@ -445,9 +648,23 @@ export function CrmWorkspace({ initialSession }) {
       setClientDocument(null);
       setModal(null);
       setActiveNav("Clients");
-      if (activeNav === "Clients") {
-        refreshRecords(firebaseUser, "Clients").catch((error) => setDataError(`Client added, but records could not refresh: ${error.message}`));
+      // The write returns the created client, so the table updates from the
+      // response instead of waiting for a second network round-trip.
+      if (result?.client) {
+        const created = result.client;
+        setClientRecords((current) => [{
+          ...created,
+          date: created.date || clientForm.date || "-",
+          owner: assignableEmployeeRecords.find((employee) => employee.uid === created.assignedTo)?.name || created.owner || "",
+          initials: created.initials || clientForm.name.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
+          color: created.color || "mint",
+          workTime: clientForm.workTime,
+          workShift: workShiftFromTime(clientForm.workTime),
+        }, ...current.filter((record) => record.id !== created.id)]);
       }
+      // Everything else (the Overview totals, Excel records, Payments) is
+      // revalidated in the background rather than blocking the UI.
+      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client added, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not save client to Firebase: ${error.message}`);
     } finally {
@@ -483,8 +700,18 @@ export function CrmWorkspace({ initialSession }) {
     try {
       await requestApi("clients", "PATCH", { ...clientEditForm, clientId: clientEditForm.id, action: "edit" });
       setModal(null);
+      const nextRemote = { ...clientEditForm, id: clientEditForm.id, name: clientEditForm.name, provider: clientEditForm.provider };
+      setClientRecords((current) => current.map((record) => record.id === nextRemote.id
+        ? {
+          ...record,
+          ...nextRemote,
+          amount: Number(nextRemote.totalAmount) || 0,
+          received: Number(nextRemote.totalReceived) || 0,
+          workShift: workShiftFromTime(nextRemote.workTime),
+        }
+        : record));
       setActiveNav("Clients");
-      refreshRecords(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not update client: ${error.message}`);
     } finally {
@@ -511,20 +738,12 @@ export function CrmWorkspace({ initialSession }) {
       });
 
       if (result?.employee) {
-        setEmployeeRecords((current) => [{
-          ...result.employee,
-          roleCode: result.employee.role,
-          role: ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[result.employee.role] || result.employee.role,
-          status: result.employee.status === "active" ? "Active" : "Inactive",
-          initials: name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "",
-        }, ...current]);
+        setEmployeeRecords((current) => [formatEmployee(result.employee), ...current]);
       }
 
       setModal(null);
       setActiveNav("Employees");
-      if (activeNav === "Employees") {
-        refreshRecords(firebaseUser, "Employees").catch((refreshError) => setDataError(`Employee created, but records could not refresh: ${refreshError.message}`));
-      }
+      loadSection(firebaseUser, "Employees", { force: true }).catch((refreshError) => setDataError(`Employee created, but records could not refresh: ${refreshError.message}`));
     } catch (error) {
       setDataError(`Could not save employee to Firebase: ${error.message}`);
     } finally {
@@ -548,7 +767,7 @@ export function CrmWorkspace({ initialSession }) {
       setServiceRecords((current) => current.filter((service) => service.clientId !== clientToDelete.id));
       setModal(null);
       setClientToDelete(null);
-      refreshRecords(firebaseUser, activeNav).catch((error) => setDataError(`Client deleted, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client deleted, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not delete client: ${error.message}`);
     } finally {
@@ -603,7 +822,7 @@ export function CrmWorkspace({ initialSession }) {
       const { uid, ...updates } = employeeEditForm;
       delete updates.email;
       await requestApi("employees", "PATCH", { uid, ...updates });
-      await refreshRecords(firebaseUser, "Employees");
+      await loadSection(firebaseUser, "Employees", { force: true });
       setModal(null);
     } catch (error) {
       setDataError(`Could not update employee: ${error.message}`);
@@ -613,7 +832,7 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       await requestApi("employees", "PATCH", { uid: employee.uid, status });
-      await refreshRecords(firebaseUser, "Employees");
+      await loadSection(firebaseUser, "Employees", { force: true });
     } catch (error) {
       setDataError(`Could not update employee status: ${error.message}`);
     }
@@ -622,7 +841,7 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       await requestApi("employees", "PATCH", { uid, permissions });
-      await refreshRecords(firebaseUser, "Employees");
+      await loadSection(firebaseUser, "Employees", { force: true });
     } catch (error) {
       setDataError(`Could not update employee permissions: ${error.message}`);
     }
@@ -631,7 +850,9 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       await requestApi("clients", "PATCH", { clientId: client.id, status });
-      await refreshRecords(firebaseUser, "Clients");
+      // Optimistic: the row flips immediately, the network read confirms it.
+      setClientRecords((current) => current.map((record) => record.id === client.id ? { ...record, status } : record));
+      await loadSection(firebaseUser, "Clients", { force: true });
     } catch (error) {
       setDataError(`Could not update work status: ${error.message}`);
     }
@@ -640,7 +861,9 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       await requestApi("clients", "PATCH", { clientId, assignedTo });
-      await refreshRecords(firebaseUser, "Clients");
+      const owner = assignableEmployeeRecords.find((employee) => employee.uid === assignedTo)?.name;
+      setClientRecords((current) => current.map((record) => record.id === clientId ? { ...record, assignedTo, ...(owner ? { owner, assignedToName: owner } : {}) } : record));
+      await loadSection(firebaseUser, "Clients", { force: true });
     } catch (error) {
       setDataError(`Could not reassign client: ${error.message}`);
     }
@@ -656,9 +879,7 @@ export function CrmWorkspace({ initialSession }) {
       setPaymentForm({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10) });
       setModal(null);
       setActiveNav("Payments");
-      if (activeNav === "Payments") {
-        refreshRecords(firebaseUser, "Payments").catch((error) => setDataError(`Payment saved, but records could not refresh: ${error.message}`));
-      }
+      loadSection(firebaseUser, "Payments", { force: true }).catch((error) => setDataError(`Payment saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not record payment: ${error.message}`);
     } finally {
@@ -677,9 +898,7 @@ export function CrmWorkspace({ initialSession }) {
       setServiceForm({ name: "", category: "" });
       setModal(null);
       setActiveNav("Services");
-      if (activeNav === "Services") {
-        refreshRecords(firebaseUser, "Services").catch((error) => setDataError(`Service saved, but records could not refresh: ${error.message}`));
-      }
+      loadSection(firebaseUser, "Services", { force: true }).catch((error) => setDataError(`Service saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not save service: ${error.message}`);
     } finally {
@@ -702,13 +921,14 @@ export function CrmWorkspace({ initialSession }) {
       </aside>
 
       <section className="main-content">
-        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={14} /><strong>{activeNav}</strong></div><div className="top-actions"><div className="secure-tag"><span className="secure-dot" /> Data access: scoped</div><button className="icon-button"><Icon name="bell" /><i /></button><div className="top-avatar">AK</div></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={14} /><strong>{activeNav}</strong></div><div className="top-actions"><div className="secure-tag"><span className="secure-dot" /> Data access: scoped</div>{isRefreshing && <div className="syncing-tag" role="status">Syncing…</div>}<button className="icon-button"><Icon name="bell" /><i /></button><div className="top-avatar">AK</div></div></header>
         <div className="content-wrap">
           {dataError && <div className="empty-state" role="alert">{dataError}</div>}
           <div className="welcome-row">
             <div><p className="eyebrow">{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p><h1>Good morning, {session.name.split(" ")[0]}</h1><p className="subheading">Here&apos;s what&apos;s happening across your practice today.</p></div>
             <div className="header-actions">
-              {role === "Admin" && <label className="role-select"><span>Admin team view</span><select value={teamView} onChange={(event) => { setTeamView(event.target.value); setModal(null); }}><option value="All teams">All teams</option>{employeeRecords.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              {canOpenTeamView && <label className="role-select"><span>{session.role === "admin" ? "Admin team view" : "Team view"}</span><select value={teamView} onChange={(event) => { setTeamView(event.target.value); setModal(null); }}><option value="All teams">All teams</option>{teamViewEmployees.map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              {canPreviewTeam && teamViewEmployees.length === 0 && <span className="team-view-empty">{emptyTeamNotice(session, dataError, !isLoading)}</span>}
               <div className="role-select role-static"><span>Signed in as</span><strong>{session.roleLabel}</strong></div>
               {canAddClient && !isAdminPreview && <button className="primary-button" onClick={() => openModal("client")}><Icon name="plus" size={17} /> Add client</button>}
             </div>

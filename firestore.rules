@@ -113,6 +113,12 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/system/bootstrap).data.adminUid == request.auth.uid;
     }
 
+    // Every direct read of a user document goes through this one function. A
+    // Sub Admin may inspect all Senior Technical and JN Technical staff (the
+    // README's team scope), not only the branch they personally created —
+    // scoping reads to the reporting chain is what emptied the Team view. This
+    // governs reads only: writes still require isManagedByCaller, so authority
+    // over a record never leaks just because it became visible.
     function canReadUser(uid, data) {
       return signedIn()
         && (uid == request.auth.uid
@@ -122,6 +128,57 @@ service cloud.firestore {
                 && ((myProfile().role == 'sub_admin'
                   && data.role in ['senior_technical', 'jn_technical'])
                   || isManagedByCaller(data)))));
+    }
+
+    // List queries are only as strong as their filters, and Firestore evaluates
+    // this per returned document without giving the rules access to the query.
+    // These filters are exactly what app/lib/crm-data.js uses to build the team
+    // and assignment lists; any other list stays denied. Role values are matched
+    // against the rule's own role names so that removing a role from roleOrder
+    // in app/lib/roles.js can never silently widen what is listed here.
+    //
+    // A `where(...)` filter always carries a map with an 'in' operator, so the
+    // shape check below does not depend on whether the client also sends a
+    // limit. The employee queries deliberately send none: the full list is
+    // loaded, and adding or dropping a limit on one side would make the query
+    // and the rule disagree.
+    function isTeamListQuery() {
+      let filter = request.query;
+      let roleFilter = filter.get('role', null);
+      return filter.get('status', null) == 'active'
+        && roleFilter is map
+        && roleFilter.get('operator', null) == 'in'
+        && roleFilter.get('value', null) is list
+        && roleFilter.get('value', []).hasOnly(['senior_technical', 'jn_technical']);
+    }
+
+    function canListTeam(uid, data) {
+      return isTeamListQuery()
+        && canReadUser(uid, data)
+        && data.status == 'active'
+        && data.role in ['senior_technical', 'jn_technical'];
+    }
+
+    // The Admin directory: every employee, regardless of role or account state,
+    // which is what the Employee management screen and the Team view enumerate.
+    // It carries the same role filter as the team list, just with all four role
+    // names, because the query needs the clause to stay well-formed.
+    function isEmployeeListQuery() {
+      let roleFilter = request.query.get('role', null);
+      return request.query.get('status', null) == null
+        && roleFilter is map
+        && roleFilter.get('operator', null) == 'in'
+        && roleFilter.get('value', null) is list
+        && roleFilter.get('value', []).hasOnly([
+          'admin', 'sub_admin', 'senior_technical', 'jn_technical'
+        ]);
+    }
+
+    function canListEmployees(uid, data) {
+      return hasActiveRole()
+        && hasPermission('manage_employees')
+        && isEmployeeListQuery()
+        && canReadUser(uid, data);
     }
 
     function canSeeEmployee(uid) {
@@ -312,11 +369,13 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow get, list: if canReadUser(uid, resource.data)
+      allow get: if canReadUser(uid, resource.data)
         || (isRecoveryLookup()
           && resource.data.keys().hasOnly([
             'uid', 'name', 'email', 'phone', 'role'
           ]));
+      allow list: if canListTeam(uid, resource.data)
+        || canListEmployees(uid, resource.data);
       allow create: if request.resource.data.uid == uid
         && (isBootstrapAdmin(request.resource.data)
           || canCreateEmployee(request.resource.data));
