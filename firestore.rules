@@ -14,22 +14,23 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    // Rank order, highest authority first. The two lists below are written in
-    // exactly this order, so a role inserted here must be inserted in both:
-    // roleRank() is what every scope check compares, and the list membership is
-    // what the team/directory list queries are matched against.
+    // Rank order, highest authority first. The two lists below must agree with
+    // it: roleRank() is what every scope check compares, and the list membership
+    // is what the team/directory list queries are matched against. Social Media
+    // sits directly under admin and above Sub Admin, so it can staff and assign
+    // to every role beneath it.
     function teamRoles() {
-      return ['senior_technical', 'jn_technical', 'social_media'];
+      return ['social_media', 'sub_admin', 'senior_technical', 'jn_technical'];
     }
 
     function directoryRoles() {
-      return ['admin', 'sub_admin', 'social_media', 'senior_technical', 'jn_technical'];
+      return ['admin', 'social_media', 'sub_admin', 'senior_technical', 'jn_technical'];
     }
 
     function roleRank(role) {
       return role == 'admin' ? 0
-        : role == 'sub_admin' ? 1
-        : role == 'social_media' ? 2
+        : role == 'social_media' ? 1
+        : role == 'sub_admin' ? 2
         : role == 'senior_technical' ? 3
         : role == 'jn_technical' ? 4
         : -1;
@@ -38,12 +39,12 @@ service cloud.firestore {
     function defaultPermissions(role) {
       return role == 'admin'
         ? ['manage_employees', 'manage_permissions', 'manage_clients', 'manage_assignments']
-        : role == 'sub_admin'
+        // A Social Media account staffs the roles beneath it and distributes
+        // clients, carrying the same lower-employee authority a Sub Admin has.
+        : role == 'social_media'
           ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
-          // A Social Media account distributes clients but does not manage
-          // employees, so it carries the assignment permissions only.
-          : role == 'social_media'
-            ? ['manage_clients', 'manage_assignments']
+          : role == 'sub_admin'
+            ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
             : role == 'senior_technical'
               ? ['manage_junior_employees', 'manage_assignments']
               : [];
@@ -95,6 +96,7 @@ service cloud.firestore {
 
     function canManageRole(role) {
       return (myProfile().role == 'admin' && hasPermission('manage_employees'))
+        || (myProfile().role == 'social_media' && hasPermission('manage_lower_employees'))
         || (myProfile().role == 'sub_admin' && hasPermission('manage_lower_employees'))
         || (myProfile().role == 'senior_technical' && hasPermission('manage_junior_employees'));
     }

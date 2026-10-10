@@ -147,8 +147,8 @@ export async function useProfile(user) {
 }
 
 // The team list is read by filtered query rather than by walking the
-// managerUid/createdBy chain: a Sub Admin, and now a Social Media user, may see
-// every role beneath them (see the canListTeam/canReadUser scope in
+// managerUid/createdBy chain: a Social Media or Sub Admin user may see every
+// role beneath them (see the canListTeam/canReadUser scope in
 // firestore.rules), and a chain walk would hide lower-ranked staff whose
 // managerUid points at someone else, leaving the Team view dropdown empty. The
 // filter is also what makes the read legal — neither role has a blanket
@@ -157,13 +157,13 @@ export async function useProfile(user) {
 // Every read compares the role field against a value list, and Firestore rejects
 // an "in" filter whose array is empty, so both lists are derived from the single
 // role order in app/lib/roles.js. The values must match the names firestore.rules
-// whitelists; both teamRoleFilter and the rule list widen automatically when a
-// role is added beneath sub_admin (Social Media).
+// whitelists; the role lists here and in the rules both widen automatically when
+// a role is added beneath its parent in roleOrder.
 const adminTeamRoles = reportableRoles("admin");
+const socialMediaTeamRoles = reportableRoles("social_media");
 const subAdminTeamRoles = reportableRoles("sub_admin");
-// The order the rules match: Senior Technical, JN Technical, then Social Media.
-const technicalTeamRoles = subAdminTeamRoles.filter((role) => role !== "social_media");
-const anyRoleFilter = ["admin", ...subAdminTeamRoles];
+// Every role name except admin: the widest filter the team-list rule accepts.
+const anyRoleFilter = ["admin", ...adminTeamRoles];
 
 function assertQueryValues(label, values) {
   if (!values.length) throw new Error(`Cannot list users: ${label} is empty.`);
@@ -190,7 +190,7 @@ function teamListQuery(roles) {
 // purely the caller's own scope.
 function teamRolesFor(profile) {
   if (profile.role === "admin") return adminTeamRoles;
-  if (profile.role === "social_media") return technicalTeamRoles;
+  if (profile.role === "social_media") return socialMediaTeamRoles;
   return subAdminTeamRoles;
 }
 
@@ -259,7 +259,10 @@ async function getManagedProfiles(profile) {
 }
 
 async function getAssignableProfiles(profile) {
-  if (profile.role === "sub_admin") {
+  // Both roles that outrank the staff beneath them read it by filtered query
+  // (see getManagedProfiles), which is also the only /users read a Social Media
+  // or Sub Admin account is permitted to make.
+  if (profile.role === "sub_admin" || profile.role === "social_media") {
     return getTeamProfiles(profile);
   }
   return getManagedProfiles(profile);
@@ -465,6 +468,7 @@ async function createEmployee(caller, input) {
   }
   const permission = {
     admin: "manage_employees",
+    social_media: "manage_lower_employees",
     sub_admin: "manage_lower_employees",
     senior_technical: "manage_junior_employees",
   }[caller.role];
@@ -554,6 +558,7 @@ async function updateEmployee(caller, input) {
   }
   const permission = {
     admin: "manage_employees",
+    social_media: "manage_lower_employees",
     sub_admin: "manage_lower_employees",
     senior_technical: "manage_junior_employees",
   }[caller.role];

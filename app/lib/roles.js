@@ -1,13 +1,13 @@
 // Ordered from highest to lowest authority. The index of a role is its rank:
 // roleOrder.indexOf(role) is the single source of truth for "who is above
 // whom", and isRoleBelow/reportableRoles below are built on it. "social_media"
-// sits directly under sub_admin and above the technical roles, so a Social
-// Media user can be created by an Admin or a Sub Admin and can itself assign
-// clients down to every technical role.
+// sits directly under admin and above sub_admin, so a Social Media user can
+// create and assign clients to Sub Admin, Senior Technical and JN Technical —
+// every role beneath it.
 export const roleOrder = [
   "admin",
-  "sub_admin",
   "social_media",
+  "sub_admin",
   "senior_technical",
   "jn_technical",
 ];
@@ -19,10 +19,11 @@ export const rolePermissions = {
     "manage_clients",
     "manage_assignments",
   ],
+  // A Social Media account staffs and distributes beneath itself: it creates
+  // Sub Admin / Senior Technical / JN Technical accounts and assigns clients to
+  // them, carrying the same lower-employee authority a Sub Admin used to have.
+  social_media: ["manage_lower_employees", "manage_clients", "manage_assignments"],
   sub_admin: ["manage_lower_employees", "manage_clients", "manage_assignments"],
-  // Same client/assignment authority as a Sub Admin, but no employee
-  // management: a Social Media account distributes work, it does not staff it.
-  social_media: ["manage_clients", "manage_assignments"],
   senior_technical: ["manage_junior_employees", "manage_assignments"],
   jn_technical: [],
 };

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "firebase/auth";
 import { auth, subscribeToAuthUser } from "./lib/firebase";
 import { crmRequest } from "./lib/crm-data";
+import { isRoleBelow, reportableRoles } from "./lib/roles";
 import BrandLogo from "./brand-logo";
 
 const navItems = [
@@ -242,7 +243,7 @@ async function loadTeamList(user, requestApi, recordCacheRef, setEmployeeRecords
   setAssignableEmployeeRecords((result.assignableEmployees || result.employees).map(formatEmployee));
 }
 
-function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, readOnlyPreview, isAdmin }) {
+function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEmployeeStatusChange, onEditEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, assignableRoleOptions, readOnlyPreview, isAdmin }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -290,9 +291,13 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     () => paymentRecords.filter((payment) => `${payment.clientName} ${payment.date} ${payment.usedFor || ""}`.toLowerCase().includes(normalizedQuery)),
     [paymentRecords, normalizedQuery],
   );
+  // Assignment targets are filtered on assignableRoleOptions, not
+  // employeeRoleOptions: the latter is the (empty, for Social Media) set of
+  // roles it may create, and reusing it here left the reassign / create-client
+  // dropdowns empty for every role that distributes clients without staffing.
   const activeAssignableEmployees = useMemo(
-    () => assignableEmployees.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role)),
-    [assignableEmployees, employeeRoleOptions],
+    () => assignableEmployees.filter((employee) => employee.status === "Active" && assignableRoleOptions.some((employeeRole) => roleNames[employeeRole] === employee.role)),
+    [assignableEmployees, assignableRoleOptions],
   );
 
   // "Assigned clients" used to re-scan the whole client list once per employee
@@ -365,20 +370,22 @@ export function CrmWorkspace({ initialSession }) {
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
   const [newEmployeeRole, setNewEmployeeRole] = useState("");
   const [passwordResetForm, setPasswordResetForm] = useState({ uid: "", password: "", confirmPassword: "" });
-  // Higher roles only, mirroring roleOrder in app/lib/roles.js: Admin staffs the
-  // whole tree, a Sub Admin also creates Social Media accounts, and Social Media
-  // itself manages no employees — it only distributes clients.
-  const employeeRoleOptions = ({
-    admin: ["sub_admin", "social_media", "senior_technical", "jn_technical"],
-    sub_admin: ["social_media", "senior_technical", "jn_technical"],
-    social_media: [],
-    senior_technical: ["jn_technical"],
-    jn_technical: [],
-  })[session.role] || [];
-  const employeePermission = ({ admin: "manage_employees", sub_admin: "manage_lower_employees", senior_technical: "manage_junior_employees" })[session.role];
+  // Every role a caller outranks, mirroring roleOrder in app/lib/roles.js:
+  // Admin staffs the whole tree, Social Media and Sub Admin create the roles
+  // beneath them, and a Senior Technical creates JN Technical accounts.
+  const employeeRoleOptions = reportableRoles(session.role);
+  const employeePermission = ({ admin: "manage_employees", social_media: "manage_lower_employees", sub_admin: "manage_lower_employees", senior_technical: "manage_junior_employees" })[session.role];
   const canManageEmployees = employeeRoleOptions.length > 0 && session.permissions.includes(employeePermission);
+  // Who this account may hand a client to: every role it outranks, matching
+  // getAssignableProfiles in app/lib/crm-data.js. It mirrors employeeRoleOptions
+  // today but is kept separate so assignment targets never silently follow a
+  // future change to who may be staffed.
+  const assignableRoleOptions = reportableRoles(session.role);
   const canManageServices = session.permissions.includes("manage_clients");
-  const canAddClient = employeeRoleOptions.length > 0 && session.permissions.includes("manage_assignments");
+  // Client creation is gated on the assignment permission alone, never on
+  // employeeRoleOptions: a role that distributes clients must see Add client
+  // even if it staffs nobody.
+  const canAddClient = session.permissions.includes("manage_assignments");
   const visibleNavItems = navItems.filter(([label]) => {
     if (label === "Employees") return canManageEmployees || session.permissions.includes("manage_assignments");
     if (session.role === "jn_technical") return ["Overview", "Clients", "Services", "Payments", "Excel records"].includes(label);
@@ -547,23 +554,15 @@ export function CrmWorkspace({ initialSession }) {
   }, [employeeRecords, teamView]);
   const previewEmployeeUids = canPreviewTeam && teamView !== "All teams" ? teamViewEmployeeIds : null;
   const isAdminPreview = canPreviewTeam && teamView !== "All teams";
-  // Employees a signed-in user may open in the Team view. Match the stored role
-  // code first and fall back to the display label, so an unexpected role casing
-  // never silently empties the dropdown. The teammate currently selected stays
-  // in the list even while the scoped record set is still loading.
+  // Employees a signed-in user may open in the Team view: everyone the caller
+  // outranks, derived from the one role order so a reordering never leaves a
+  // stale hard-coded role list behind. Admin sees the whole directory. The
+  // teammate currently selected stays in the list even while the scoped record
+  // set is still loading.
   const teamViewEmployees = useMemo(() => {
     if (!canPreviewTeam) return [];
-    const canSeeEmployee = (employee) => {
-      if (session.role === "admin") return true;
-      const roleCode = employee.roleCode || employee.role;
-      if (session.role === "sub_admin" || session.role === "social_media") {
-        return roleCode === "senior_technical"
-          || roleCode === "jn_technical"
-          || employee.role === "Senior Technical"
-          || employee.role === "JN Technical";
-      }
-      return roleCode === "jn_technical" || employee.role === "JN Technical";
-    };
+    const canSeeEmployee = (employee) =>
+      session.role === "admin" || isRoleBelow(session.role, employee.roleCode || employee.role);
     const options = employeeRecords.filter(canSeeEmployee);
     if (!options.some((employee) => employee.uid === teamView)) {
       const selected = employeeRecords.find((employee) => employee.uid === teamView);
@@ -943,7 +942,7 @@ export function CrmWorkspace({ initialSession }) {
 
           {activeNav === "Overview" ? <>
           <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid)} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} readOnlyPreview={isAdminPreview} />}
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEmployeeStatusChange={updateEmployeeStatus} onEditEmployee={openEmployeeEdit} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(null); setClientToDelete(null); } }}>
@@ -966,7 +965,7 @@ export function CrmWorkspace({ initialSession }) {
                 <input type="file" onChange={selectClientDocument} />
                 <span className="document-file-name">{isReadingDocument ? "Reading file..." : clientDocument ? clientDocument.name : "No file selected"}</span>
               </label>
-              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => roleNames[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
+              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && assignableRoleOptions.some((allowedRole) => roleNames[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
               <label>Total amount<input required type="number" min="0" value={clientForm.amount} onChange={(event) => setClientForm({ ...clientForm, amount: event.target.value })} placeholder="100000" /></label>
               <label>Received amount<input type="number" min="0" value={clientForm.received} onChange={(event) => setClientForm({ ...clientForm, received: event.target.value })} placeholder="0" /></label>
               <label>Payment used for (optional)<input value={clientForm.usedFor} onChange={(event) => setClientForm({ ...clientForm, usedFor: event.target.value })} placeholder="e.g. NTN Registration fee" /></label>
@@ -1000,7 +999,7 @@ export function CrmWorkspace({ initialSession }) {
               <label>Email<input name="email" required type="email" placeholder="name@ptpconsultant.pk" /></label>
               <label>Phone<input name="phone" required type="tel" placeholder="03XX-XXXXXXX" /></label>
               <label>Role<select name="role" required value={newEmployeeRole} onChange={(event) => setNewEmployeeRole(event.target.value)}> <option value="" disabled>Select role</option>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{roleNames[employeeRole]}</option>)}</select></label>
-              {session.role === "admin" && <label>Reports to<select name="managerUid" required defaultValue=""><option value="" disabled>Select manager</option><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[newEmployeeRole]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              {session.role === "admin" && <label>Reports to<select name="managerUid" required defaultValue=""><option value="" disabled>Select manager</option><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => isRoleBelow(employee.roleCode, newEmployeeRole)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
               <PasswordField label="Temporary password" name="password" minLength={8} autoComplete="new-password" required />
             </div>
             <p className="form-note"><Icon name="shield" size={14} /> The employee can sign in through the common login page.</p>
@@ -1018,7 +1017,7 @@ export function CrmWorkspace({ initialSession }) {
               <label>Email<input type="email" value={employeeEditForm.email} disabled /></label>
               <label>Phone<input required type="tel" value={employeeEditForm.phone} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, phone: event.target.value })} /></label>
               <label>Role<select required value={employeeEditForm.role} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, role: event.target.value })}>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{roleNames[employeeRole]}</option>)}</select></label>
-              {session.role === "admin" && <label>Reports to<select required value={employeeEditForm.managerUid} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, managerUid: event.target.value })}><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => employee.uid !== employeeEditForm.uid && ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employeeEditForm.role]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              {session.role === "admin" && <label>Reports to<select required value={employeeEditForm.managerUid} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, managerUid: event.target.value })}><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => employee.uid !== employeeEditForm.uid && isRoleBelow(employee.roleCode, employeeEditForm.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
             </div>
             <p className="form-note">Employee login email is managed by Firebase Authentication and cannot be changed from another account.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Save employee</button></div>
