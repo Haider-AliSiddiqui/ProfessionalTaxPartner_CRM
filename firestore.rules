@@ -274,7 +274,8 @@ service cloud.firestore {
         && data.totalReceived is number
         && data.totalAmount >= 0
         && data.totalReceived >= 0
-        && data.totalReceived <= data.totalAmount;
+        && data.totalReceived <= data.totalAmount
+        && (!data.keys().hasAny(['usedFor']) || data.usedFor is string);
     }
 
     function isClientCreator(data) {
@@ -312,8 +313,8 @@ service cloud.firestore {
       return canAccessClient(oldData)
         && newData.diff(oldData).affectedKeys().hasOnly([
           'amount', 'totalAmount', 'received', 'totalReceived', 'remaining',
-          'status', 'payment', 'paymentStatus', 'paymentDate', 'lastPaymentId',
-          'updatedAt'
+          'status', 'payment', 'paymentStatus', 'paymentDate', 'usedFor',
+          'lastPaymentId', 'updatedAt'
         ])
         && paymentId is string
         && existsAfter(/databases/$(database)/documents/payments/$(paymentId))
@@ -339,6 +340,10 @@ service cloud.firestore {
         && data.recordedBy == request.auth.uid
         && data.amount is number
         && data.amount > 0
+        // Required in the payment section: every payment must say what it was for.
+        && data.usedFor is string
+        && data.usedFor.size() > 0
+        && data.usedFor.size() <= 200
         && existsAfter(clientPath)
         && client.lastPaymentId == paymentId
         && client.assignedTo == data.assignedTo
@@ -418,7 +423,8 @@ service cloud.firestore {
             'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
             'email', 'work', 'description', 'document', 'documentName', 'documentType',
             'amount', 'totalAmount', 'received',
-            'totalReceived', 'remaining', 'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
+            'totalReceived', 'remaining', 'usedFor',
+            'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
           ]))
           && request.resource.data.cell is string
           && request.resource.data.cell.matches('^[0-9]{11}$')

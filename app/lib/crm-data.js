@@ -688,6 +688,10 @@ async function createClient(caller, input) {
     throw new Error("A client with the same CNIC, email, or name and service already exists.");
   }
 
+  // Optional here: the Add client form does not require it, but when the client
+  // is created with a first payment the same value is carried onto that payment
+  // record so the Payments table stays consistent.
+  const usedFor = String(input.usedFor || "").trim();
   const amount = Number(input.totalAmount ?? input.amount) || 0;
   const received = Number(input.totalReceived ?? input.received) || 0;
   if (amount < 0 || received < 0 || received > amount) {
@@ -751,7 +755,7 @@ async function createClient(caller, input) {
     payment: paymentStatus,
     paymentStatus,
     ...(received > 0
-      ? { paymentDate, lastPaymentId: paymentRef.id }
+      ? { paymentDate, lastPaymentId: paymentRef.id, ...(usedFor ? { usedFor } : {}) }
       : {}),
   };
   await runTransaction(db, async (transaction) => {
@@ -764,6 +768,7 @@ async function createClient(caller, input) {
         amount: received,
         date: paymentDate,
         receivedAt: String(input.receivedAt || "").trim(),
+        ...(usedFor ? { usedFor } : {}),
         recordedBy: caller.uid,
         recordedByName: caller.name || "Unknown user",
         createdAt: serverTimestamp(),
@@ -891,6 +896,11 @@ async function updateClient(caller, input) {
         work: String(input.work || "").trim(),
         description: String(input.description || "").trim(),
         document: String(input.document || "").trim(),
+        // Optional on the client form: an empty value is ignored so an existing
+        // payment purpose is never wiped just by saving the client.
+        ...(String(input.usedFor || "").trim()
+          ? { usedFor: String(input.usedFor).trim() }
+          : {}),
         workTime,
         workShift: workShiftFromTime(workTime),
         amount: totalAmount,
@@ -974,8 +984,15 @@ async function createPayment(caller, input) {
   const amount = Number(input.amount);
   const date = input.date || new Date().toISOString().slice(0, 10);
   const receivedAt = String(input.receivedAt || "").trim();
+  // "Payment used for" is required in the payment section: a payment is only
+  // valid when it says what it was spent on, so a missing value never reaches
+  // the write. On the client form the same field stays optional.
+  const usedFor = String(input.usedFor || "").trim();
   if (!clientId || !Number.isFinite(amount) || amount <= 0) {
     throw new Error("Client and a payment amount greater than zero are required.");
+  }
+  if (!usedFor) {
+    throw new Error("Payment used for is required.");
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new Error("Payment date must use YYYY-MM-DD format.");
@@ -1010,6 +1027,7 @@ async function createPayment(caller, input) {
       amount,
       date,
       receivedAt,
+      usedFor,
       recordedBy: caller.uid,
       recordedByName: caller.name || "Unknown user",
       createdAt: serverTimestamp(),
@@ -1025,6 +1043,7 @@ async function createPayment(caller, input) {
       payment: paymentStatus,
       paymentStatus,
       paymentDate: date,
+      usedFor,
       lastPaymentId: paymentRef.id,
       updatedAt: serverTimestamp(),
     });
