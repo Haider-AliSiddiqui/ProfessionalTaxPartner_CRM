@@ -19,6 +19,7 @@ import BrandLogo from "@/app/brand-logo";
 const portalForRole = {
   admin: "/admin/dashboard",
   sub_admin: "/sub-admin/dashboard",
+  social_media: "/social-media/dashboard",
   senior_technical: "/senior-technical/dashboard",
   jn_technical: "/jn-technical/dashboard",
 };

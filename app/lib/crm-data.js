@@ -27,10 +27,11 @@ import {
   isRoleBelow,
   normalizePhone,
   normalizeRole,
+  reportableRoles,
+  roleOrder,
   rolePermissions,
 } from "./roles.js";
 
-const roleOrder = ["admin", "sub_admin", "senior_technical", "jn_technical"];
 const employeeAuthAppName = "crm-employee-provisioning";
 // Firestore on a warm connection costs one network round-trip (~150-400ms) per
 // read. A single dashboard refresh used to issue 10-20 of them because the
@@ -146,16 +147,23 @@ export async function useProfile(user) {
 }
 
 // The team list is read by filtered query rather than by walking the
-// managerUid/createdBy chain: a Sub Admin may see every Senior Technical and JN
-// Technical employee (see the canListTeam/canReadUser scope in firestore.rules),
-// and a chain walk would hide lower-ranked staff whose managerUid points at
-// someone else, leaving the Team view dropdown empty. The filter is also what
-// makes the read legal — a Sub Admin has no blanket permission to list /users.
-// Both reads compare the role field against a value list, and Firestore rejects
-// an "in" filter whose array is empty. Deriving the arrays below from roleOrder
-// means neither can ever be empty, whatever the order is edited to.
-const teamRoleFilter = ["senior_technical", "jn_technical"];
-const anyRoleFilter = [...roleOrder];
+// managerUid/createdBy chain: a Sub Admin, and now a Social Media user, may see
+// every role beneath them (see the canListTeam/canReadUser scope in
+// firestore.rules), and a chain walk would hide lower-ranked staff whose
+// managerUid points at someone else, leaving the Team view dropdown empty. The
+// filter is also what makes the read legal — neither role has a blanket
+// permission to list /users.
+//
+// Every read compares the role field against a value list, and Firestore rejects
+// an "in" filter whose array is empty, so both lists are derived from the single
+// role order in app/lib/roles.js. The values must match the names firestore.rules
+// whitelists; both teamRoleFilter and the rule list widen automatically when a
+// role is added beneath sub_admin (Social Media).
+const adminTeamRoles = reportableRoles("admin");
+const subAdminTeamRoles = reportableRoles("sub_admin");
+// The order the rules match: Senior Technical, JN Technical, then Social Media.
+const technicalTeamRoles = subAdminTeamRoles.filter((role) => role !== "social_media");
+const anyRoleFilter = ["admin", ...subAdminTeamRoles];
 
 function assertQueryValues(label, values) {
   if (!values.length) throw new Error(`Cannot list users: ${label} is empty.`);
@@ -166,16 +174,28 @@ function assertQueryValues(label, values) {
 // `role`, so the role clause must stay in the query rather than be dropped for a
 // single-role caller. Dropping it while the rules require it (or leaving it out
 // entirely) is what produced Invalid Query errors before.
-function teamListQuery() {
+function teamListQuery(roles) {
   return query(
     collection(db, "users"),
-    where("role", "in", assertQueryValues("team role filter", teamRoleFilter)),
+    where("role", "in", assertQueryValues("team role filter", roles)),
     where("status", "==", "active"),
   );
 }
 
+// Which role values a team read is allowed to carry. An Admin (and an Admin-only
+// caller such as the bootstrap path) reads the whole directory including Social
+// Media accounts; a Sub Admin reads its technical team; a Social Media user
+// reads the technical team below it. Firestore's team-list rule accepts the
+// whole set for any caller that passes the read scope, so the narrower query is
+// purely the caller's own scope.
+function teamRolesFor(profile) {
+  if (profile.role === "admin") return adminTeamRoles;
+  if (profile.role === "social_media") return technicalTeamRoles;
+  return subAdminTeamRoles;
+}
+
 async function getTeamProfiles(profile) {
-  const snapshot = await getDocs(teamListQuery());
+  const snapshot = await getDocs(teamListQuery(teamRolesFor(profile)));
   return snapshot.docs
     .map((record) => ({ uid: record.id, ...record.data() }))
     .filter(
@@ -203,7 +223,11 @@ async function getManagedProfiles(profile) {
     return getDirectoryProfiles(profile);
   }
 
-  if (profile.role === "sub_admin") {
+  // Both roles that outrank the technical staff read them by filtered query
+  // rather than by walking the reporting chain (see getTeamProfiles). Social
+  // Media has no permission to list /users, so the team query is also the only
+  // read of employees its account can make.
+  if (profile.role === "sub_admin" || profile.role === "social_media") {
     return getTeamProfiles(profile);
   }
 
@@ -626,9 +650,12 @@ async function createClient(caller, input) {
   if (!name || !provider || !assignedTo) {
     throw new Error("Client name, service, and assignee are required.");
   }
+  // Only a role that assigns on its own behalf can be the assignee itself: for
+  // Admin, Sub Admin and Social Media `isRoleBelow(role, role)` is false, so this
+  // identity path never widens what those roles may assign to.
   const employees = await getAssignableProfiles(caller);
   const target =
-    assignedTo === caller.uid
+    assignedTo === caller.uid && isRoleBelow(caller.role, caller.role)
       ? caller
       : employees.find((employee) => employee.uid === assignedTo);
   if (
@@ -915,11 +942,11 @@ async function updateClient(caller, input) {
     const previous = employees.find(
       (employee) => employee.uid === current.assignedTo,
     );
-    if (
-      caller.role !== "admin" &&
-      current.assignedTo !== caller.uid &&
-      (!previous || !isRoleBelow(caller.role, previous.role))
-    ) {
+    const mayTransferRest =
+      caller.role === "admin" ||
+      (current.assignedTo === caller.uid && isRoleBelow(caller.role, caller.role)) ||
+      (previous && isRoleBelow(caller.role, previous.role));
+    if (!mayTransferRest) {
       throw new Error("You are not authorized to transfer this client.");
     }
     transaction.update(clientRef, {

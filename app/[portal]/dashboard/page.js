@@ -10,6 +10,7 @@ import { normalizeRole, roleLabel, rolePermissions } from "@/app/lib/roles";
 const portalRoles = {
   admin: "admin",
   "sub-admin": "sub_admin",
+  "social-media": "social_media",
   "senior-technical": "senior_technical",
   "jn-technical": "jn_technical",
 };

@@ -201,7 +201,7 @@ function PasswordField({ label, value, onChange, placeholder, minLength = 8, nam
   );
 }
 
-const roleNames = { sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
+const roleNames = { sub_admin: "Sub Admin", social_media: "Social Media", senior_technical: "Senior Technical", jn_technical: "JN Technical" };
 
 // The Team view is built from the employee list, so a denied or failing employee
 // read used to render as "No team members in your scope" — which reads as "your
@@ -210,7 +210,7 @@ const roleNames = { sub_admin: "Sub Admin", senior_technical: "Senior Technical"
 function emptyTeamNotice(session, error, hasLoaded) {
   if (!hasLoaded) return "Loading team...";
   const role = session?.role;
-  if (role !== "sub_admin" && role !== "senior_technical") {
+  if (role !== "sub_admin" && role !== "social_media" && role !== "senior_technical") {
     return "No team members in your scope";
   }
   const canReadTeam = [
@@ -365,9 +365,13 @@ export function CrmWorkspace({ initialSession }) {
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
   const [newEmployeeRole, setNewEmployeeRole] = useState("");
   const [passwordResetForm, setPasswordResetForm] = useState({ uid: "", password: "", confirmPassword: "" });
+  // Higher roles only, mirroring roleOrder in app/lib/roles.js: Admin staffs the
+  // whole tree, a Sub Admin also creates Social Media accounts, and Social Media
+  // itself manages no employees — it only distributes clients.
   const employeeRoleOptions = ({
-    admin: ["sub_admin", "senior_technical", "jn_technical"],
-    sub_admin: ["senior_technical", "jn_technical"],
+    admin: ["sub_admin", "social_media", "senior_technical", "jn_technical"],
+    sub_admin: ["social_media", "senior_technical", "jn_technical"],
+    social_media: [],
     senior_technical: ["jn_technical"],
     jn_technical: [],
   })[session.role] || [];
@@ -552,7 +556,7 @@ export function CrmWorkspace({ initialSession }) {
     const canSeeEmployee = (employee) => {
       if (session.role === "admin") return true;
       const roleCode = employee.roleCode || employee.role;
-      if (session.role === "sub_admin") {
+      if (session.role === "sub_admin" || session.role === "social_media") {
         return roleCode === "senior_technical"
           || roleCode === "jn_technical"
           || employee.role === "Senior Technical"
@@ -960,7 +964,7 @@ export function CrmWorkspace({ initialSession }) {
                 <input type="file" onChange={selectClientDocument} />
                 <span className="document-file-name">{isReadingDocument ? "Reading file..." : clientDocument ? clientDocument.name : "No file selected"}</span>
               </label>
-              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => ({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
+              <label>Assigned employee<select required value={clientForm.assignedTo} onChange={(event) => setClientForm({ ...clientForm, assignedTo: event.target.value })}><option value="">Select employee</option>{assignableEmployeeRecords.filter((employee) => employee.status === "Active" && employeeRoleOptions.some((allowedRole) => roleNames[allowedRole] === employee.role)).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>
               <label>Total amount<input required type="number" min="0" value={clientForm.amount} onChange={(event) => setClientForm({ ...clientForm, amount: event.target.value })} placeholder="100000" /></label>
               <label>Received amount<input type="number" min="0" value={clientForm.received} onChange={(event) => setClientForm({ ...clientForm, received: event.target.value })} placeholder="0" /></label>
             </div>
@@ -991,8 +995,8 @@ export function CrmWorkspace({ initialSession }) {
               <label>Full name<input name="name" required placeholder="e.g. Hira Malik" /></label>
               <label>Email<input name="email" required type="email" placeholder="name@ptpconsultant.pk" /></label>
               <label>Phone<input name="phone" required type="tel" placeholder="03XX-XXXXXXX" /></label>
-              <label>Role<select name="role" required value={newEmployeeRole} onChange={(event) => setNewEmployeeRole(event.target.value)}> <option value="" disabled>Select role</option>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[employeeRole]}</option>)}</select></label>
-              {session.role === "admin" && <label>Reports to<select name="managerUid" required defaultValue=""><option value="" disabled>Select manager</option><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[newEmployeeRole]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              <label>Role<select name="role" required value={newEmployeeRole} onChange={(event) => setNewEmployeeRole(event.target.value)}> <option value="" disabled>Select role</option>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{roleNames[employeeRole]}</option>)}</select></label>
+              {session.role === "admin" && <label>Reports to<select name="managerUid" required defaultValue=""><option value="" disabled>Select manager</option><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[newEmployeeRole]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
               <PasswordField label="Temporary password" name="password" minLength={8} autoComplete="new-password" required />
             </div>
             <p className="form-note"><Icon name="shield" size={14} /> The employee can sign in through the common login page.</p>
@@ -1009,8 +1013,8 @@ export function CrmWorkspace({ initialSession }) {
               <label>Full name<input required value={employeeEditForm.name} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, name: event.target.value })} /></label>
               <label>Email<input type="email" value={employeeEditForm.email} disabled /></label>
               <label>Phone<input required type="tel" value={employeeEditForm.phone} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, phone: event.target.value })} /></label>
-              <label>Role<select required value={employeeEditForm.role} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, role: event.target.value })}>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{({ sub_admin: "Sub Admin", senior_technical: "Senior Technical", jn_technical: "JN Technical" })[employeeRole]}</option>)}</select></label>
-              {session.role === "admin" && <label>Reports to<select required value={employeeEditForm.managerUid} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, managerUid: event.target.value })}><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => employee.uid !== employeeEditForm.uid && ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, senior_technical: 2, jn_technical: 3 })[employeeEditForm.role]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
+              <label>Role<select required value={employeeEditForm.role} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, role: event.target.value })}>{employeeRoleOptions.map((employeeRole) => <option key={employeeRole} value={employeeRole}>{roleNames[employeeRole]}</option>)}</select></label>
+              {session.role === "admin" && <label>Reports to<select required value={employeeEditForm.managerUid} onChange={(event) => setEmployeeEditForm({ ...employeeEditForm, managerUid: event.target.value })}><option value={session.uid}>Admin · {session.name}</option>{employeeRecords.filter((employee) => employee.uid !== employeeEditForm.uid && ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employee.roleCode] < ({ admin: 0, sub_admin: 1, social_media: 2, senior_technical: 3, jn_technical: 4 })[employeeEditForm.role]).map((employee) => <option key={employee.uid} value={employee.uid}>{employee.name} · {employee.role}</option>)}</select></label>}
             </div>
             <p className="form-note">Employee login email is managed by Firebase Authentication and cannot be changed from another account.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Save employee</button></div>

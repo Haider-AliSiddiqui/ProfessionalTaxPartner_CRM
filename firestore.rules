@@ -14,11 +14,24 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    // Rank order, highest authority first. The two lists below are written in
+    // exactly this order, so a role inserted here must be inserted in both:
+    // roleRank() is what every scope check compares, and the list membership is
+    // what the team/directory list queries are matched against.
+    function teamRoles() {
+      return ['senior_technical', 'jn_technical', 'social_media'];
+    }
+
+    function directoryRoles() {
+      return ['admin', 'sub_admin', 'social_media', 'senior_technical', 'jn_technical'];
+    }
+
     function roleRank(role) {
       return role == 'admin' ? 0
         : role == 'sub_admin' ? 1
-        : role == 'senior_technical' ? 2
-        : role == 'jn_technical' ? 3
+        : role == 'social_media' ? 2
+        : role == 'senior_technical' ? 3
+        : role == 'jn_technical' ? 4
         : -1;
     }
 
@@ -27,9 +40,13 @@ service cloud.firestore {
         ? ['manage_employees', 'manage_permissions', 'manage_clients', 'manage_assignments']
         : role == 'sub_admin'
           ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
-          : role == 'senior_technical'
-            ? ['manage_junior_employees', 'manage_assignments']
-            : [];
+          // A Social Media account distributes clients but does not manage
+          // employees, so it carries the assignment permissions only.
+          : role == 'social_media'
+            ? ['manage_clients', 'manage_assignments']
+            : role == 'senior_technical'
+              ? ['manage_junior_employees', 'manage_assignments']
+              : [];
     }
 
     function hasPermission(permission) {
@@ -94,7 +111,7 @@ service cloud.firestore {
       return hasActiveRole()
         && canManageRole(data.role)
         && roleRank(data.role) > roleRank(myProfile().role)
-        && data.role in ['sub_admin', 'senior_technical', 'jn_technical']
+        && data.role in directoryRoles().remove('admin')
         && data.createdBy == request.auth.uid
         && data.status in ['active', 'inactive']
         && data.permissions == defaultPermissions(data.role)
@@ -114,28 +131,28 @@ service cloud.firestore {
     }
 
     // Every direct read of a user document goes through this one function. A
-    // Sub Admin may inspect all Senior Technical and JN Technical staff (the
-    // README's team scope), not only the branch they personally created —
-    // scoping reads to the reporting chain is what emptied the Team view. This
-    // governs reads only: writes still require isManagedByCaller, so authority
-    // over a record never leaks just because it became visible.
+    // Sub Admin may inspect all staff beneath it, including Social Media
+    // accounts, and a Social Media user may inspect the technical staff it
+    // assigns to — not only the branch they personally created. Scoping reads to
+    // the reporting chain is what emptied the Team view. This governs reads
+    // only: writes still require isManagedByCaller, so authority over a record
+    // never leaks just because it became visible.
     function canReadUser(uid, data) {
       return signedIn()
         && (uid == request.auth.uid
           || (hasActiveRole()
             && (myProfile().role == 'admin'
               || (roleRank(data.role) > roleRank(myProfile().role)
-                && ((myProfile().role == 'sub_admin'
-                  && data.role in ['senior_technical', 'jn_technical'])
-                  || isManagedByCaller(data)))));
+                && (data.role in teamRoles() || isManagedByCaller(data))))));
     }
 
     // List queries are only as strong as their filters, and Firestore evaluates
     // this per returned document without giving the rules access to the query.
     // These filters are exactly what app/lib/crm-data.js uses to build the team
     // and assignment lists; any other list stays denied. Role values are matched
-    // against the rule's own role names so that removing a role from roleOrder
-    // in app/lib/roles.js can never silently widen what is listed here.
+    // against the rule's own role lists above, so a role added to roleOrder in
+    // app/lib/roles.js is still denied here until it is added to teamRoles() or
+    // directoryRoles() — a new role can never silently widen what is listed.
     //
     // A `where(...)` filter always carries a map with an 'in' operator, so the
     // shape check below does not depend on whether the client also sends a
@@ -149,29 +166,27 @@ service cloud.firestore {
         && roleFilter is map
         && roleFilter.get('operator', null) == 'in'
         && roleFilter.get('value', null) is list
-        && roleFilter.get('value', []).hasOnly(['senior_technical', 'jn_technical']);
+        && roleFilter.get('value', []).hasOnly(teamRoles());
     }
 
     function canListTeam(uid, data) {
       return isTeamListQuery()
         && canReadUser(uid, data)
         && data.status == 'active'
-        && data.role in ['senior_technical', 'jn_technical'];
+        && data.role in teamRoles();
     }
 
     // The Admin directory: every employee, regardless of role or account state,
     // which is what the Employee management screen and the Team view enumerate.
-    // It carries the same role filter as the team list, just with all four role
-    // names, because the query needs the clause to stay well-formed.
+    // It carries the same role filter as the team list, just with every role
+    // name, because the query needs the clause to stay well-formed.
     function isEmployeeListQuery() {
       let roleFilter = request.query.get('role', null);
       return request.query.get('status', null) == null
         && roleFilter is map
         && roleFilter.get('operator', null) == 'in'
         && roleFilter.get('value', null) is list
-        && roleFilter.get('value', []).hasOnly([
-          'admin', 'sub_admin', 'senior_technical', 'jn_technical'
-        ]);
+        && roleFilter.get('value', []).hasOnly(directoryRoles());
     }
 
     function canListEmployees(uid, data) {
@@ -185,8 +200,7 @@ service cloud.firestore {
       return uid == request.auth.uid
         || (exists(/databases/$(database)/documents/users/$(uid))
           && roleRank(get(/databases/$(database)/documents/users/$(uid)).data.role) > roleRank(myProfile().role)
-          && ((myProfile().role == 'sub_admin'
-            && get(/databases/$(database)/documents/users/$(uid)).data.role in ['senior_technical', 'jn_technical'])
+          && (get(/databases/$(database)/documents/users/$(uid)).data.role in teamRoles()
             || isManagedByCaller(get(/databases/$(database)/documents/users/$(uid)).data)));
     }
 
@@ -200,7 +214,7 @@ service cloud.firestore {
           'name', 'phone', 'role', 'status', 'managerUid', 'permissions', 'updatedAt'
         ])
         && (!newData.diff(oldData).affectedKeys().hasAny(['role'])
-          || (newData.role in ['sub_admin', 'senior_technical', 'jn_technical']
+          || (newData.role in directoryRoles().remove('admin')
             && roleRank(newData.role) > roleRank(myProfile().role)))
         && (!newData.diff(oldData).affectedKeys().hasAny(['permissions'])
           || (newData.diff(oldData).affectedKeys().hasAny(['role'])
@@ -227,7 +241,7 @@ service cloud.firestore {
           || (data.assignedTo is string
             && roleRank(myProfile().role) >= 0
             && roleRank(get(/databases/$(database)/documents/users/$(data.assignedTo)).data.role) > roleRank(myProfile().role)
-            && (myProfile().role == 'sub_admin'
+            && (myProfile().role in ['sub_admin', 'social_media']
               || isManagedByCaller(get(/databases/$(database)/documents/users/$(data.assignedTo)).data))));
     }
 
@@ -238,8 +252,8 @@ service cloud.firestore {
         && activeUser(uid)
         && roleRank(target.role) > roleRank(myProfile().role)
         && (myProfile().role == 'admin'
-          || (myProfile().role == 'sub_admin'
-            && target.role in ['senior_technical', 'jn_technical'])
+          || (myProfile().role in ['sub_admin', 'social_media']
+            && target.role in teamRoles())
           || isManagedByCaller(target));
     }
 
