@@ -21,7 +21,8 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import { app, auth, db, passwordResetSettings } from "./firebase.js";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { app, auth, db, passwordResetSettings, storage } from "./firebase.js";
 import {
   hasPermission,
   isRoleBelow,
@@ -47,6 +48,56 @@ let recordsCache = null;
 function clearCaches() {
   profileCache = null;
   recordsCache = null;
+}
+
+// Client documents are uploaded to Cloud Storage instead of being inlined into
+// the Firestore client document as data URLs: a base64 payload inflates the
+// file by ~33%, counts against Firestore's 1 MiB per-document limit (a few
+// scanned PDFs already blow past it), and is re-downloaded on every clients
+// list read. Storage keeps the record small and the file is fetched only when a
+// document link is opened. The download URL is stored on the client record.
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
+function sanitizeDocumentName(name) {
+  const cleaned = String(name || "document")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+/, "")
+    .slice(-120);
+  return cleaned || "document";
+}
+
+// Uploads one file for a client and resolves to { name, type, url, path }.
+// `clientId` scopes the object so storage rules can verify the caller is part
+// of that client's assignment chain before accepting the write.
+async function uploadClientDocument({ clientId, file, name, type, dataUrl }) {
+  let body;
+  if (file) {
+    body = file;
+  } else if (dataUrl) {
+    body = dataUrlToBlob(dataUrl);
+  } else {
+    throw new Error("The document has no data to upload.");
+  }
+  if (body.size > MAX_DOCUMENT_BYTES) {
+    throw new Error(
+      `${name || "A document"} is larger than ${Math.round(MAX_DOCUMENT_BYTES / (1024 * 1024))} MB. Please choose a smaller file.`,
+    );
+  }
+  const fileName = sanitizeDocumentName(name);
+  const objectRef = ref(storage, `clients/${clientId}/${Date.now()}-${fileName}`);
+  const contentType = type || body.type || "application/octet-stream";
+  await uploadBytes(objectRef, body, { contentType });
+  const url = await getDownloadURL(objectRef);
+  return { name: String(name || fileName), type: contentType, url, path: objectRef.fullPath };
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header = "", encoded = ""] = String(dataUrl).split(",");
+  const mime = /data:([^;]+)/.exec(header)?.[1] || "application/octet-stream";
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mime });
 }
 
 function recordFromSnapshot(snapshot) {
@@ -200,7 +251,9 @@ async function getTeamProfiles(profile) {
     .map((record) => ({ uid: record.id, ...record.data() }))
     .filter(
       (employee) =>
-        employee.uid !== profile.uid && isRoleBelow(profile.role, employee.role),
+        !employee.archivedAt &&
+        employee.uid !== profile.uid &&
+        isRoleBelow(profile.role, employee.role),
     );
 }
 
@@ -213,12 +266,13 @@ async function getDirectoryProfiles(profile) {
       where("role", "in", assertQueryValues("directory role filter", anyRoleFilter)),
     ),
   );
-  return snapshot.docs
-    .map((record) => ({ uid: record.id, ...record.data() }))
-    .filter((employee) => isRoleBelow(profile.role, employee.role));
-}
-
-async function getManagedProfiles(profile) {
+    return snapshot.docs
+      .map((record) => ({ uid: record.id, ...record.data() }))
+      .filter(
+        (employee) => !employee.archivedAt && isRoleBelow(profile.role, employee.role),
+      );
+  }
+  async function getManagedProfiles(profile) {
   if (profile.role === "admin") {
     return getDirectoryProfiles(profile);
   }
@@ -245,7 +299,7 @@ async function getManagedProfiles(profile) {
     const nextUids = [];
     for (const snapshot of snapshots) {
       for (const record of snapshot.docs) {
-        if (!found.has(record.id)) {
+        if (!found.has(record.id) && !record.data().archivedAt) {
           found.set(record.id, { uid: record.id, ...record.data() });
           nextUids.push(record.id);
         }
@@ -565,7 +619,41 @@ async function updateEmployee(caller, input) {
   if (!permission || !hasPermission(caller, permission)) {
     throw new Error("Your account does not have permission to manage employees.");
   }
-
+  if (input.action === "delete") {
+    if (target.role === "admin") {
+      throw new Error("An Admin account cannot be deleted.");
+    }
+    // Block deleting an employee that clients are still assigned to: those
+    // clients would keep a dangling assignedTo uid and vanish from every
+    // owner's list. Reassign them first (Clients -> Reassign client).
+    const assigned = await getDocs(
+      query(collection(db, "clients"), where("assignedTo", "==", uid)),
+    );
+    const liveAssigned = assigned.docs.filter(
+      (record) => !record.data().archivedAt,
+    );
+    if (liveAssigned.length) {
+      throw new Error(
+        `This employee still has ${liveAssigned.length} assigned client(s). Reassign them before deleting.`,
+      );
+    }
+    // Any child employee that reported to the deleted one is re-pointed at the
+    // caller, so the reporting chain stays intact for reads that walk it.
+    const reports = await getDocs(
+      query(collection(db, "users"), where("managerUid", "==", uid)),
+    );
+    const batch = writeBatch(db);
+    reports.docs.forEach((record) =>
+      batch.update(record.ref, {
+        managerUid: caller.uid,
+        updatedAt: serverTimestamp(),
+      }),
+    );
+    batch.delete(doc(db, "users", uid));
+    await batch.commit();
+    clearCaches();
+    return { uid, deleted: true };
+  }
   const updates = { updatedAt: serverTimestamp() };
   if (input.status !== undefined) {
     const status = String(input.status).trim().toLowerCase();
@@ -716,6 +804,26 @@ async function createClient(caller, input) {
   const paymentDate =
     input.paymentDate || input.date || new Date().toISOString().slice(0, 10);
   const workTime = normalizeWorkTime(input.workTime);
+  // The Add client form may attach several files. Each one is uploaded to Cloud
+  // Storage and the record keeps a `documents` array of { name, type, url,
+  // path }. The legacy single-file fields (document / documentName /
+  // documentType) mirror the first file so existing readers keep working; a
+  // legacy data-URL `input.document` is still accepted and passed through
+  // untouched, so old clients that never uploaded to Storage remain readable.
+  const rawDocuments = Array.isArray(input.documents) ? input.documents : [];
+  const documents = [];
+  for (const item of rawDocuments) {
+    if (!item || (!item.file && !item.dataUrl)) continue;
+    documents.push(await uploadClientDocument({
+      clientId: clientRef.id,
+      file: item.file,
+      name: item.name,
+      type: item.type,
+      dataUrl: item.dataUrl,
+    }));
+  }
+  const primaryDocument = documents[0];
+  const legacyDocument = String(input.document || "").trim();
   const client = {
     ...Object.fromEntries(
       [
@@ -727,15 +835,18 @@ async function createClient(caller, input) {
         "email",
         "work",
         "description",
-        "document",
-        "documentName",
-        "documentType",
         "initials",
         "color",
       ]
         .filter((key) => input[key] !== undefined)
         .map((key) => [key, input[key]]),
     ),
+    ...(documents.length ? { documents } : {}),
+    document: primaryDocument?.url || legacyDocument,
+    documentName:
+      primaryDocument?.name || String(input.documentName || "").trim(),
+    documentType:
+      primaryDocument?.type || String(input.documentType || "").trim(),
     name,
     provider,
     cell,
@@ -786,9 +897,10 @@ async function createClient(caller, input) {
       name,
       provider,
       assignedTo,
-      document: String(input.document || "").trim(),
-      documentName: String(input.documentName || "").trim(),
-      documentType: String(input.documentType || "").trim(),
+      document: primaryDocument?.url || String(input.document || "").trim(),
+      documentName: primaryDocument?.name || String(input.documentName || "").trim(),
+      documentType: primaryDocument?.type || String(input.documentType || "").trim(),
+      ...(documents.length ? { documents } : {}),
       status,
       amount,
       received,

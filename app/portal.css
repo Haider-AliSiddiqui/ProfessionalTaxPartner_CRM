@@ -19,3 +19,17 @@
   .permission-checkboxes { grid-column: auto; }
   .assignment-control, .employee-role-control { align-items: flex-start; flex-direction: column; }
 }
+/* Add client: multiple document upload. The label spans the dialog, the chosen
+   files are listed underneath and each one can be removed before saving. */
+.form-grid .document-field { grid-column: 1 / -1; }
+.form-grid .document-field input[type="file"] { padding: 8px 10px; font-size: 10px; }
+.document-file-name { display: block; margin-top: 6px; color: #84908b; font-size: 10px; }
+.document-selection-list { grid-column: 1 / -1; margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.document-selection-list li { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; background: var(--mint); color: #36423d; font-size: 10px; }
+.document-selection-list li > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-selection-list svg { flex: none; color: var(--teal); }
+.document-remove-button { flex: none; border: 0; background: transparent; color: #c46f5d; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+.document-remove-button:hover { color: #a94f3e; }
+/* Documents column: one link per uploaded file. */
+.document-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.document-link-name { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

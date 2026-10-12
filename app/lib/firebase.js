@@ -1,6 +1,7 @@
 import { getApps, initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 import { resetSessionCache } from "./crm-data.js";
 
 const firebaseConfig = {
@@ -28,6 +29,7 @@ const app =
   initializeApp(firebaseConfig, appName);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 // Both the login screen and the portal dashboard used to subscribe to auth
 // separately, so every navigation duplicated the queued ID-token and profile
@@ -72,4 +74,4 @@ export const passwordResetSettings = {
   handleCodeInApp: false,
 };
 
-export { app, auth, db, firebaseConfig };
+export { app, auth, db, storage, firebaseConfig };

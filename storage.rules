@@ -1,0 +1,107 @@
+rules_version = '2';
+
+// Client documents live under clients/{clientId}/ and are readable/writable
+// only by an active user who can already see that client in Firestore — its
+// assignee, its assigner, or a manager in the chain above them. Firestore is
+// the source of truth for that scope, so canAccessClient() below mirrors the
+// function of the same name in firestore.rules rather than inventing a second,
+// drifting definition. Deactivated accounts lose document access immediately,
+// exactly as they lose Firestore access.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /clients/{clientId}/{fileName} {
+      function signedIn() {
+        return request.auth != null;
+      }
+
+      function activeUser(uid) {
+        return exists(/databases/(default)/documents/users/$(uid))
+          && get(/databases/(default)/documents/users/$(uid)).data.status == 'active';
+      }
+
+      function hasActiveRole() {
+        return signedIn() && activeUser(request.auth.uid);
+      }
+
+      function myProfile() {
+        return get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+      }
+
+      function roleRank(role) {
+        return role == 'admin' ? 4
+          : role == 'sub_admin' ? 3
+            : role == 'social_media' ? 2
+              : role == 'senior_technical' ? 1
+                : 0;
+      }
+
+      function parentUid(profile) {
+        let managerUid = profile.get('managerUid', null);
+        return managerUid is string ? managerUid : profile.get('createdBy', null);
+      }
+
+      function managerOf(uid) {
+        return parentUid(get(/databases/(default)/documents/users/$(uid)).data);
+      }
+
+      // Matches isManagedByCaller in firestore.rules: a manager up to three
+      // levels above the assignee can see the client too.
+      function isManagedByCaller(profile) {
+        let parent = parentUid(profile);
+        let grandparent = parent is string ? managerOf(parent) : null;
+        let greatGrandparent = grandparent is string ? managerOf(grandparent) : null;
+        return parent == request.auth.uid
+          || grandparent == request.auth.uid
+          || greatGrandparent == request.auth.uid;
+      }
+
+      function clientData() {
+        return get(/databases/(default)/documents/clients/$(clientId)).data;
+      }
+
+      // Live clients only: an archived (deleted) client's documents stay
+      // unreachable even if a stale download URL is kept.
+      function isLiveClient() {
+        return exists(/databases/(default)/documents/clients/$(clientId))
+          && clientData().archivedAt == null;
+      }
+
+      function canAccessClient() {
+        return hasActiveRole()
+          && isLiveClient()
+          && (myProfile().role == 'admin'
+            || clientData().assignedTo == request.auth.uid
+            || clientData().assignedBy == request.auth.uid
+            || clientData().createdBy == request.auth.uid
+            || (clientData().assignedTo is string
+              && roleRank(myProfile().role) >= 0
+              && roleRank(get(/databases/(default)/documents/users/$(clientData().assignedTo)).data.role) > roleRank(myProfile().role)
+              && (myProfile().role in ['sub_admin', 'social_media']
+                || isManagedByCaller(get(/databases/(default)/documents/users/$(clientData().assignedTo)).data))));
+      }
+
+      // Uploading is part of creating a client, so it needs the same permission
+      // the client write itself demands.
+      function hasManageAssignments() {
+        let profile = myProfile();
+        return profile.permissions is list
+          ? 'manage_assignments' in profile.permissions
+          : profile.role in ['admin', 'sub_admin', 'social_media', 'senior_technical'];
+      }
+
+      allow read: if canAccessClient();
+      allow create: if canAccessClient()
+        && hasManageAssignments()
+        && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if canAccessClient() && hasManageAssignments();
+      // Documents are immutable once uploaded: replacing one would silently
+      // change what an existing client record points at.
+      allow update: if false;
+    }
+
+    // Nothing else in the bucket is reachable from the web client.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

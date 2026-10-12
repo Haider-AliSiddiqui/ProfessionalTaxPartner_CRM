@@ -402,7 +402,15 @@ service cloud.firestore {
           || canCreateEmployee(request.resource.data));
       allow update: if request.resource.data.uid == uid
         && canUpdateEmployee(uid, resource.data, request.resource.data);
-      allow delete: if false;
+      // A manager may delete an employee it is allowed to manage: the same
+      // scope, rank and permission checks as canUpdateEmployee, and never an
+      // Admin account (roleRank guards that) or the caller's own record.
+      allow delete: if hasActiveRole()
+        && uid != request.auth.uid
+        && isManagedByCaller(resource.data)
+        && roleRank(resource.data.role) > roleRank(myProfile().role)
+        && canManageRole(resource.data.role)
+        && resource.data.role in directoryRoles().remove('admin');
     }
 
     match /employees/{uid} {
@@ -423,7 +431,7 @@ service cloud.firestore {
           && (hasPermission('manage_clients') || hasPermission('manage_assignments'))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
-            'email', 'work', 'description', 'document', 'documentName', 'documentType',
+            'email', 'work', 'description', 'document', 'documentName', 'documentType', 'documents',
             'amount', 'totalAmount', 'received',
             'totalReceived', 'remaining', 'usedFor',
             'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
