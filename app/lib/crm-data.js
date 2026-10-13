@@ -11,7 +11,6 @@ import {
   getDoc,
   getDocs,
   limit,
-  or,
   query,
   runTransaction,
   serverTimestamp,
@@ -48,6 +47,63 @@ let recordsCache = null;
 function clearCaches() {
   profileCache = null;
   recordsCache = null;
+}
+
+// Write-through cache: a create/update/delete already knows exactly how the
+// record set changed, so wiping the cache (and paying for a full re-read on the
+// next GET) is wasted work. Patching the cached value in place means the very
+// next read — the dashboard refresh that follows a save — is served from memory
+// with zero network round-trips, so the button click updates the screen at once.
+// The TTL still expires the entry so an out-of-band change (another user, another
+// tab) is picked up within CACHE_TTL_MS.
+function patchCachedRecords(profile, mutate) {
+  if (!recordsCache || recordsCache.uid !== profile.uid) return;
+  const previous = recordsCache;
+  // A write against an already-expired entry must not revive it: the cached set
+  // is missing whatever else changed while it was stale, so it is dropped and
+  // the next read pays for one honest network refresh.
+  if (Date.now() - previous.at >= CACHE_TTL_MS) {
+    recordsCache = null;
+    return;
+  }
+  const next = mutate({
+    clients: previous.value.clients,
+    services: previous.value.services,
+    payments: previous.value.payments,
+    assignmentProfiles: previous.value.assignmentProfiles,
+  });
+  if (!next) return;
+  recordsCache = {
+    uid: profile.uid,
+    // Kept at the original read time so the TTL still bounds how long the entry
+    // lives; a write does not extend the window indefinitely.
+    at: previous.at,
+    value: {
+      clients: next.clients ?? previous.value.clients,
+      services: next.services ?? previous.value.services,
+      payments: next.payments ?? previous.value.payments,
+      assignmentProfiles: next.assignmentProfiles ?? previous.value.assignmentProfiles,
+    },
+  };
+}
+
+// The Add/Edit client forms send fields the cached client row does not carry
+// under the same name ("amount" vs "totalAmount"), so the returned write is
+// normalised once here before it replaces the cached row.
+function mergeClientRecord(existing, incoming) {
+  const amount = Number(incoming.totalAmount ?? incoming.amount ?? existing?.totalAmount ?? existing?.amount) || 0;
+  const received = Number(incoming.totalReceived ?? incoming.received ?? existing?.totalReceived ?? existing?.received) || 0;
+  return {
+    ...(existing || {}),
+    ...incoming,
+    id: incoming.id ?? existing?.id,
+    amount,
+    totalAmount: amount,
+    received,
+    totalReceived: received,
+    remaining: Number.isFinite(incoming.remaining) ? incoming.remaining : Math.max(amount - received, 0),
+    workShift: incoming.workShift ?? workShiftFromTime(incoming.workTime ?? existing?.workTime),
+  };
 }
 
 // Client documents are uploaded to Cloud Storage instead of being inlined into
@@ -430,27 +486,29 @@ async function getServices(profile, teamProfiles, clients) {
   } else {
     const visibleUids = chunkValues([profile.uid, ...teamProfiles.map(({ uid }) => uid)], 30);
     const clientIds = chunkValues(clients.map(({ id }) => id), 30);
-    // At least one side of this OR must carry values: an "in" filter with an
-    // empty array is rejected by Firestore before the query is even sent.
-    if (visibleUids.length || clientIds.length) {
-      // One "in" query per side (createdBy OR assignedTo OR clientId) replaces
-      // the old per-user / per-client fan-out, which reached hundreds of reads.
-      const clauses = [];
-      for (const chunk of visibleUids) {
-        clauses.push(where("createdBy", "in", chunk));
-        clauses.push(where("assignedTo", "in", chunk));
-      }
-      for (const chunk of clientIds) {
-        clauses.push(where("clientId", "in", chunk));
-      }
-      const snapshot = await getDocs(
-        clauses.length === 1
-          ? query(collection(db, "services"), clauses[0])
-          : query(collection(db, "services"), or(...clauses)),
-      );
+    // Each "in" value counts as its own disjunction, and Firestore caps a
+    // composite OR at 30. Combining createdBy/assignedTo/clientId into one
+    // or(...) query therefore blew the cap as soon as the team or client set
+    // grew (the "33 disjunctions" error), so each chunk is issued as its own
+    // query and the results are merged here instead. Every clause on its own is
+    // still permitted by the services list rule, which accepts a match on any
+    // one of createdBy, assignedTo or clientId.
+    const queries = [
+      ...visibleUids.flatMap((chunk) => [
+        query(collection(db, "services"), where("createdBy", "in", chunk)),
+        query(collection(db, "services"), where("assignedTo", "in", chunk)),
+      ]),
+      ...clientIds.map((chunk) =>
+        query(collection(db, "services"), where("clientId", "in", chunk)),
+      ),
+    ];
+    if (queries.length) {
+      const snapshots = await Promise.all(queries.map((serviceQuery) => getDocs(serviceQuery)));
       const stored = new Map();
-      for (const record of snapshot.docs) {
-        stored.set(record.id, recordFromSnapshot(record));
+      for (const snapshot of snapshots) {
+        for (const record of snapshot.docs) {
+          stored.set(record.id, recordFromSnapshot(record));
+        }
       }
       if (stored.size) return [...stored.values()];
     }
@@ -1206,17 +1264,76 @@ async function dispatch(profile, path, method, input) {
   }
   if (method === "POST" && path === "clients") {
     const created = await createClient(profile, input);
-    clearCaches();
+    // Write-through: the created row is merged into the cached record set so the
+    // refresh that follows reads from memory instead of the network.
+    if (created?.client) {
+      const row = created.client;
+      patchCachedRecords(profile, ({ clients }) => ({
+        clients: [row, ...clients.filter((client) => client.id !== row.id)],
+      }));
+    }
     return created;
   }
   if (method === "PATCH" && path === "clients") {
     const updated = await updateClient(profile, input);
-    clearCaches();
+    // Every client PATCH returns enough to patch the cached row: a status/transfer
+    // change returns the changed field, an edit returns the whole record.
+    patchCachedRecords(profile, ({ clients, payments }) => {
+      if (updated?.deleted) {
+        const clientId = updated.clientId;
+        return {
+          clients: clients.filter((client) => client.id !== clientId),
+          payments: payments.filter((payment) => payment.clientId !== clientId),
+        };
+      }
+      const changed = Object.fromEntries(
+        ["status", "assignedTo", "clientId"].filter((key) => updated?.[key] !== undefined).map((key) => [key, updated[key]]),
+      );
+      const id = updated?.clientId || changed.clientId;
+      if (!id) return null;
+      return {
+        clients: clients.map((client) => (client.id === id ? mergeClientRecord(client, { ...changed, ...(input.action === "edit" ? input : {}) }) : client)),
+        payments,
+      };
+    });
     return updated;
   }
   if (method === "POST" && path === "payments") {
     const created = await createPayment(profile, input);
-    clearCaches();
+    // A payment also moves the client's received/remaining totals, and the cached
+    // client row has to carry those numbers or the Overview totals stay stale.
+    if (created?.payment) {
+      const payment = created.payment;
+      patchCachedRecords(profile, ({ clients, payments }) => ({
+        payments: [payment, ...payments.filter((record) => record.id !== payment.id)],
+        clients: clients.map((client) => {
+          if (client.id !== payment.clientId) return client;
+          const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
+          const totalReceived = (Number(client.totalReceived ?? client.received) || 0) + (Number(payment.amount) || 0);
+          const remaining = Math.max(totalAmount - totalReceived, 0);
+          const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Partial";
+          const nextStatus = remaining === 0
+            ? "Completed"
+            : ["New", "Pending", "In Progress"].includes(client.status)
+              ? "In Progress"
+              : client.status || "Pending";
+          return {
+            ...client,
+            amount: totalAmount,
+            totalAmount,
+            received: totalReceived,
+            totalReceived,
+            remaining,
+            payment: paymentStatus,
+            paymentStatus,
+            paymentDate: payment.date,
+            ...(payment.usedFor ? { usedFor: payment.usedFor } : {}),
+            status: nextStatus,
+            lastPaymentId: payment.id,
+          };
+        }),
+      }));
+    }
     return created;
   }
   if (method === "POST" && path === "services") {
@@ -1238,8 +1355,12 @@ async function dispatch(profile, path, method, input) {
     };
     const serviceRef = doc(collection(db, "services"));
     await setDoc(serviceRef, service);
-    clearCaches();
-    return { service: { id: serviceRef.id, ...service, createdAt: null } };
+    const created = { id: serviceRef.id, ...service, createdAt: null };
+    // Write-through: the new service lands in the cached set immediately.
+    patchCachedRecords(profile, ({ services }) => ({
+      services: [created, ...services.filter((record) => record.id !== created.id)],
+    }));
+    return { service: created };
   }
   throw new Error("Unsupported Firebase data operation.");
 }

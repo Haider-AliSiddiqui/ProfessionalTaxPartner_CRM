@@ -696,10 +696,17 @@ export function CrmWorkspace({ initialSession }) {
       // response instead of waiting for a second network round-trip.
       if (result?.client) {
         const created = result.client;
+        // The table renders from this row the moment the write returns; the
+        // background refresh replaces it with the authoritative document.
         setClientRecords((current) => [{
           ...created,
+          ...clientForm,
+          id: created.id,
           date: created.date || clientForm.date || "-",
+          amount: Number(created.amount ?? clientForm.amount) || 0,
+          received: Number(created.received ?? clientForm.received) || 0,
           owner: assignableEmployeeRecords.find((employee) => employee.uid === created.assignedTo)?.name || created.owner || "",
+          assignedToName: assignableEmployeeRecords.find((employee) => employee.uid === created.assignedTo)?.name || created.assignedToName || "",
           initials: created.initials || clientForm.name.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
           color: created.color || "mint",
           workTime: clientForm.workTime,
@@ -708,7 +715,7 @@ export function CrmWorkspace({ initialSession }) {
       }
       // Everything else (the Overview totals, Excel records, Payments) is
       // revalidated in the background rather than blocking the UI.
-      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client added, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Clients").catch((error) => setDataError(`Client added, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not save client to Firebase: ${error.message}`);
     } finally {
@@ -757,7 +764,7 @@ export function CrmWorkspace({ initialSession }) {
         }
         : record));
       setActiveNav("Clients");
-      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not update client: ${error.message}`);
     } finally {
@@ -813,7 +820,7 @@ export function CrmWorkspace({ initialSession }) {
       setServiceRecords((current) => current.filter((service) => service.clientId !== clientToDelete.id));
       setModal(null);
       setClientToDelete(null);
-      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client deleted, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Clients").catch((error) => setDataError(`Client deleted, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not delete client: ${error.message}`);
     } finally {
@@ -910,9 +917,9 @@ export function CrmWorkspace({ initialSession }) {
     setDataError("");
     try {
       await requestApi("clients", "PATCH", { clientId: client.id, status });
-      // Optimistic: the row flips immediately, the network read confirms it.
+      // Optimistic: the row flips immediately, the write-through cache confirms it.
       setClientRecords((current) => current.map((record) => record.id === client.id ? { ...record, status } : record));
-      await loadSection(firebaseUser, "Clients", { force: true });
+      await loadSection(firebaseUser, "Clients");
     } catch (error) {
       setDataError(`Could not update work status: ${error.message}`);
     }
@@ -923,7 +930,7 @@ export function CrmWorkspace({ initialSession }) {
       await requestApi("clients", "PATCH", { clientId, assignedTo });
       const owner = assignableEmployeeRecords.find((employee) => employee.uid === assignedTo)?.name;
       setClientRecords((current) => current.map((record) => record.id === clientId ? { ...record, assignedTo, ...(owner ? { owner, assignedToName: owner } : {}) } : record));
-      await loadSection(firebaseUser, "Clients", { force: true });
+      await loadSection(firebaseUser, "Clients");
     } catch (error) {
       setDataError(`Could not reassign client: ${error.message}`);
     }
@@ -935,11 +942,31 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("payment");
     setDataError("");
     try {
-      await requestApi("payments", "POST", paymentForm);
+      const result = await requestApi("payments", "POST", paymentForm);
+      // The write returns the recorded payment, so the table updates from the
+      // response and the background refresh only confirms it.
+      if (result?.payment) {
+        const recorded = result.payment;
+        setPaymentRecords((current) => [recorded, ...current.filter((record) => record.id !== recorded.id)]);
+        setClientRecords((current) => current.map((record) => {
+          if (record.id !== recorded.clientId) return record;
+          const totalAmount = Number(record.amount) || 0;
+          const totalReceived = (Number(record.received) || 0) + (Number(recorded.amount) || 0);
+          const remaining = Math.max(totalAmount - totalReceived, 0);
+          return {
+            ...record,
+            amount: totalAmount,
+            received: totalReceived,
+            remaining,
+            payment: remaining === 0 && totalAmount > 0 ? "Received" : "Partial",
+            status: remaining === 0 ? "Completed" : ["New", "Pending", "In Progress"].includes(record.status) ? "In Progress" : record.status,
+          };
+        }));
+      }
       setPaymentForm({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10), usedFor: "" });
       setModal(null);
       setActiveNav("Payments");
-      loadSection(firebaseUser, "Payments", { force: true }).catch((error) => setDataError(`Payment saved, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Payments").catch((error) => setDataError(`Payment saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not record payment: ${error.message}`);
     } finally {
@@ -954,11 +981,17 @@ export function CrmWorkspace({ initialSession }) {
     setSavingAction("service");
     setDataError("");
     try {
-      await requestApi("services", "POST", serviceForm);
+      const result = await requestApi("services", "POST", serviceForm);
+      // The write returns the created service, so the table updates from the
+      // response instead of waiting for the refresh.
+      if (result?.service) {
+        const created = result.service;
+        setServiceRecords((current) => [created, ...current.filter((record) => record.id !== created.id)]);
+      }
       setServiceForm({ name: "", category: "" });
       setModal(null);
       setActiveNav("Services");
-      loadSection(firebaseUser, "Services", { force: true }).catch((error) => setDataError(`Service saved, but records could not refresh: ${error.message}`));
+      loadSection(firebaseUser, "Services").catch((error) => setDataError(`Service saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not save service: ${error.message}`);
     } finally {
