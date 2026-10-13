@@ -474,8 +474,17 @@ service cloud.firestore {
         && canDeleteLinkedRecord(resource.data.clientId);
     }
 
+    // One document per client identity (CNIC / email / name+provider), written in
+    // the same transaction as the client create. A create-only rule makes the
+    // document an idempotency token: the first transaction to commit it wins and
+    // every later create for the same identity fails the duplicate check instead
+    // of writing a second client. Clients never read this collection.
     match /clientIdentityLocks/{lockId} {
-      allow read, write: if false;
+      allow read: if false;
+      allow create: if hasActiveRole()
+        && hasPermission('manage_assignments')
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
     }
 
     match /{document=**} {

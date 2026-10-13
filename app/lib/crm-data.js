@@ -87,6 +87,17 @@ function patchCachedRecords(profile, mutate) {
   };
 }
 
+// A client's identity is the CNIC when present, otherwise the email, otherwise
+// the name+provider pair. The Add and Edit forms must derive the same key for
+// the same person, so the rule lives in one place.
+function clientIdentityKey({ cnic, email, name, provider }) {
+  const digits = String(cnic || "").replace(/\D/g, "");
+  if (digits) return `cnic:${digits}`;
+  const mail = normalizeIdentity(email);
+  if (mail) return `email:${mail}`;
+  return `name-provider:${normalizeIdentity(name)}|${normalizeIdentity(provider)}`;
+}
+
 // The Add/Edit client forms send fields the cached client row does not carry
 // under the same name ("amount" vs "totalAmount"), so the returned write is
 // normalised once here before it replaces the cached row.
@@ -791,6 +802,80 @@ async function updateEmployee(caller, input) {
   };
 }
 
+// The identity lock is the collision-proof half of the duplicate check. A client
+// create writes one document per identity key, so two creates for the same
+// person — same tab double-click, two tabs, or two sessions — contend on the
+// same document and Firestore lets exactly one of them commit. The document is
+// keyed by a hash because a CNIC/email/name+provider string contains characters
+// a document id may not carry, and it is never read by the client (see
+// firestore.rules), so its contents only exist for auditing.
+function clientIdentityLockRef(identity) {
+  return doc(db, "clientIdentityLocks", shortHash(identity));
+}
+
+// 64-bit FNV-1a over the identity string. Lock ids only need to be stable and
+// collision-resistant enough that two different identities never share a lock;
+// a collision would surface as a false "already saved", not as data loss.
+function shortHash(value) {
+  const text = String(value || "");
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= BigInt(text.charCodeAt(index));
+    hash = (hash * prime) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+// Fallback for records that predate the identity locks: scan the live client set
+// for a matching CNIC/email/name+provider. It runs inside the create transaction
+// so the read set is version-checked and a concurrent write aborts the commit
+// instead of silently duplicating.
+//
+// Reads are capped because Firestore transactions require every read to precede
+// every write and a transaction is limited to 500 document reads. A CNIC or
+// email search is a single equality query; the name+provider key is the only
+// case that needs a scan, so it reads the first 500 records and stops. Beyond
+// that the identity lock is what actually guards the create.
+const IDENTITY_SCAN_LIMIT = 500;
+
+async function findClientByIdentity(transaction, identity) {
+  const separator = identity.indexOf(":");
+  const kind = identity.slice(0, separator);
+  const raw = identity.slice(separator + 1);
+  const queries = [];
+  if (kind === "cnic") {
+    queries.push(query(collection(db, "clients"), where("cnic", "==", raw)));
+  } else if (kind === "email") {
+    queries.push(query(collection(db, "clients"), where("email", "==", raw)));
+  } else {
+    const [name, provider] = raw.split("|");
+    queries.push(
+      query(
+        collection(db, "clients"),
+        where("name", "==", name),
+        where("provider", "==", provider),
+        limit(IDENTITY_SCAN_LIMIT),
+      ),
+    );
+  }
+  const snapshots = await Promise.all(queries.map((recordQuery) => transaction.get(recordQuery)));
+  return snapshots.some((snapshot) =>
+    snapshot.docs.some((record) => {
+      const client = record.data();
+      return (
+        !client.archivedAt &&
+        clientIdentityKey({
+          cnic: client.cnic,
+          email: client.email,
+          name: client.name,
+          provider: client.provider,
+        }) === identity
+      );
+    }),
+  );
+}
+
 async function createClient(caller, input) {
   if (!hasPermission(caller, "manage_assignments")) {
     throw new Error("Your account does not have permission to assign clients.");
@@ -817,27 +902,10 @@ async function createClient(caller, input) {
     throw new Error("You are not authorized to assign clients to this employee.");
   }
 
-  const clients = await getClientRecords(caller, employees);
   const cell = normalizeDigitField(input.cell, "Cell number", 11);
   const cnic = normalizeDigitField(input.cnic, "CNIC", 13);
   const email = String(input.email || "").trim();
-  const identity = cnic
-    ? `cnic:${cnic.replace(/\D/g, "")}`
-    : email
-      ? `email:${normalizeIdentity(email)}`
-      : `name-provider:${normalizeIdentity(name)}|${normalizeIdentity(provider)}`;
-  const duplicate = clients.some((client) => {
-    if (client.archivedAt) return false;
-    const existingIdentity = client.cnic
-      ? `cnic:${String(client.cnic).replace(/\D/g, "")}`
-      : client.email
-        ? `email:${normalizeIdentity(client.email)}`
-        : `name-provider:${normalizeIdentity(client.name)}|${normalizeIdentity(client.provider)}`;
-    return existingIdentity === identity;
-  });
-  if (duplicate) {
-    throw new Error("A client with the same CNIC, email, or name and service already exists.");
-  }
+  const identity = clientIdentityKey({ cnic, email, name, provider });
 
   // Optional here: the Add client form does not require it, but when the client
   // is created with a first payment the same value is carried onto that payment
@@ -857,8 +925,13 @@ async function createClient(caller, input) {
       : received > 0
         ? "Partial"
         : "Pending";
+  // The duplicate check must not read the cached record set: a write in another
+  // tab or by another user leaves this session's cache up to CACHE_TTL_MS stale,
+  // so the same client could be saved twice. Instead the check runs on live data
+  // below, inside the write transaction.
   const clientRef = doc(collection(db, "clients"));
   const paymentRef = received > 0 ? doc(collection(db, "payments")) : null;
+  const identityRef = clientIdentityLockRef(identity);
   const paymentDate =
     input.paymentDate || input.date || new Date().toISOString().slice(0, 10);
   const workTime = normalizeWorkTime(input.workTime);
@@ -939,7 +1012,39 @@ async function createClient(caller, input) {
       : {}),
   };
   await runTransaction(db, async (transaction) => {
+    // Reads come first: a Firestore transaction must read before it writes.
+    const [identitySnapshot, clientSnapshot] = await Promise.all([
+      transaction.get(identityRef),
+      transaction.get(clientRef),
+    ]);
+    if (identitySnapshot.exists()) {
+      throw new Error("This client is already saved.");
+    }
+    // The lock document only covers creates made by this version of the app, so
+    // the pre-existing records are still scanned. A transaction read is served
+    // from the local cache when the document is unchanged and revalidated by the
+    // commit, so a concurrent create on the same key makes this transaction
+    // retry, and a retry sees the winner's lock and fails instead of duplicating.
+    const stored = clientSnapshot.exists() ? clientSnapshot.data() : null;
+    const duplicate = clientSnapshot.exists()
+      ? !stored.archivedAt &&
+        clientIdentityKey({
+          cnic: stored.cnic,
+          email: stored.email,
+          name: stored.name,
+          provider: stored.provider,
+        }) === identity
+      : await findClientByIdentity(transaction, identity);
+    if (duplicate) {
+      throw new Error("This client is already saved.");
+    }
     transaction.set(clientRef, client);
+    transaction.set(identityRef, {
+      clientId: clientRef.id,
+      identity,
+      createdBy: caller.uid,
+      createdAt: serverTimestamp(),
+    });
     if (paymentRef) {
       transaction.set(paymentRef, {
         clientId: clientRef.id,
