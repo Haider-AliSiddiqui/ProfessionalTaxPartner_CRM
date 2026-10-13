@@ -393,22 +393,26 @@ export function CrmWorkspace({ initialSession }) {
   // Every role a caller outranks, mirroring roleOrder in app/lib/roles.js:
   // Admin staffs the whole tree, Social Media and Sub Admin create the roles
   // beneath them, and a Senior Technical creates JN Technical accounts.
-  const employeeRoleOptions = reportableRoles(session.role);
-  const employeePermission = ({ admin: "manage_employees", social_media: "manage_lower_employees", sub_admin: "manage_lower_employees", senior_technical: "manage_junior_employees" })[session.role];
-  const canManageEmployees = employeeRoleOptions.length > 0 && session.permissions.includes(employeePermission);
+  // Everything below reads the session defensively: the workspace can mount for
+  // a beat before the signed-in profile arrives (or while a cached session is
+  // being revalidated), and reportableRoles(undefined) safely returns [].
+  const sessionPermissions = useMemo(() => session?.permissions || [], [session?.permissions]);
+  const employeeRoleOptions = reportableRoles(session?.role);
+  const employeePermission = ({ admin: "manage_employees", social_media: "manage_lower_employees", sub_admin: "manage_lower_employees", senior_technical: "manage_junior_employees" })[session?.role];
+  const canManageEmployees = employeeRoleOptions.length > 0 && sessionPermissions.includes(employeePermission);
   // Who this account may hand a client to: every role it outranks, matching
   // getAssignableProfiles in app/lib/crm-data.js. It mirrors employeeRoleOptions
   // today but is kept separate so assignment targets never silently follow a
   // future change to who may be staffed.
-  const assignableRoleOptions = reportableRoles(session.role);
-  const canManageServices = session.permissions.includes("manage_clients");
+  const assignableRoleOptions = reportableRoles(session?.role);
+  const canManageServices = sessionPermissions.includes("manage_clients");
   // Client creation is gated on the assignment permission alone, never on
   // employeeRoleOptions: a role that distributes clients must see Add client
   // even if it staffs nobody.
-  const canAddClient = session.permissions.includes("manage_assignments");
+  const canAddClient = sessionPermissions.includes("manage_assignments");
   const visibleNavItems = navItems.filter(([label]) => {
-    if (label === "Employees") return canManageEmployees || session.permissions.includes("manage_assignments");
-    if (session.role === "jn_technical") return ["Overview", "Clients", "Services", "Payments", "Excel records"].includes(label);
+    if (label === "Employees") return canManageEmployees || sessionPermissions.includes("manage_assignments");
+    if (session?.role === "jn_technical") return ["Overview", "Clients", "Services", "Payments", "Excel records"].includes(label);
     return true;
   });
 
@@ -426,7 +430,7 @@ export function CrmWorkspace({ initialSession }) {
   const refreshRecords = useCallback(async (user, section, { force = false } = {}) => {
     const endpoints = { clients: "clients", employees: "employees", services: "services", payments: "payments" };
     const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
-      .some((permission) => session.permissions.includes(permission));
+      .some((permission) => sessionPermissions.includes(permission));
     const requestedData = (sectionDataPlan[section] || ["clients"])
       .filter((key) => key !== "employees" || canViewEmployees);
 
@@ -480,7 +484,7 @@ export function CrmWorkspace({ initialSession }) {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [requestApi, session.permissions]);
+  }, [requestApi, sessionPermissions]);
 
   // Record sets are cached for a short window, so the tab that is actually on
   // screen decides what to load: it blocks on its own data the first time, then
@@ -489,7 +493,7 @@ export function CrmWorkspace({ initialSession }) {
     if (force) recordCacheRef.current = {};
     const now = Date.now();
     const canViewEmployees = ["manage_employees", "manage_lower_employees", "manage_junior_employees", "manage_assignments"]
-      .some((permission) => session.permissions.includes(permission));
+      .some((permission) => sessionPermissions.includes(permission));
     const requestedData = (sectionDataPlan[section] || ["clients"])
       .filter((key) => key !== "employees" || canViewEmployees);
 
@@ -513,7 +517,7 @@ export function CrmWorkspace({ initialSession }) {
       return;
     }
     await refreshRecords(user, section, { force });
-  }, [refreshRecords, requestApi, session.permissions]);
+  }, [refreshRecords, requestApi, sessionPermissions]);
 
   const hasLoadedDataRef = useRef(false);
 
@@ -560,6 +564,11 @@ export function CrmWorkspace({ initialSession }) {
   // in firestore.rules, so only directly-managed people appear here).
   const teamViewEmployeeIds = useMemo(() => {
     const ids = new Set();
+    // Seed with the selected employee's own uid: their clients are assigned to
+    // them directly (assignedTo === teamView), not only to the people beneath
+    // them. Without this seed the preview filtered those clients out and showed
+    // zero payments for the very employee whose portal is being inspected.
+    if (teamView) ids.add(teamView);
     let changed = true;
     while (changed) {
       changed = false;
@@ -582,14 +591,14 @@ export function CrmWorkspace({ initialSession }) {
   const teamViewEmployees = useMemo(() => {
     if (!canPreviewTeam) return [];
     const canSeeEmployee = (employee) =>
-      session.role === "admin" || isRoleBelow(session.role, employee.roleCode || employee.role);
+      session?.role === "admin" || isRoleBelow(session?.role, employee.roleCode || employee.role);
     const options = employeeRecords.filter(canSeeEmployee);
     if (!options.some((employee) => employee.uid === teamView)) {
       const selected = employeeRecords.find((employee) => employee.uid === teamView);
       if (selected) options.unshift(selected);
     }
     return options;
-  }, [canPreviewTeam, employeeRecords, session.role, teamView]);
+  }, [canPreviewTeam, employeeRecords, session?.role, teamView]);
   const canOpenTeamView = canPreviewTeam && teamViewEmployees.length > 0;
   const scopedClients = useMemo(() => previewEmployeeUids
     ? clientRecords.filter((client) => previewEmployeeUids.has(client.assignedTo))

@@ -16,21 +16,21 @@ service cloud.firestore {
 
     // Rank order, highest authority first. The two lists below must agree with
     // it: roleRank() is what every scope check compares, and the list membership
-    // is what the team/directory list queries are matched against. Social Media
-    // sits directly under admin and above Sub Admin, so it can staff and assign
-    // to every role beneath it.
+    // is what the team/directory list queries are matched against. Sub Admin
+    // sits directly under admin and above Social Media, so it can staff and
+    // assign to every role beneath it.
     function teamRoles() {
-      return ['social_media', 'sub_admin', 'senior_technical', 'jn_technical'];
+      return ['sub_admin', 'social_media', 'senior_technical', 'jn_technical'];
     }
 
     function directoryRoles() {
-      return ['admin', 'social_media', 'sub_admin', 'senior_technical', 'jn_technical'];
+      return ['admin', 'sub_admin', 'social_media', 'senior_technical', 'jn_technical'];
     }
 
     function roleRank(role) {
       return role == 'admin' ? 0
-        : role == 'social_media' ? 1
-        : role == 'sub_admin' ? 2
+        : role == 'sub_admin' ? 1
+        : role == 'social_media' ? 2
         : role == 'senior_technical' ? 3
         : role == 'jn_technical' ? 4
         : -1;
@@ -39,11 +39,11 @@ service cloud.firestore {
     function defaultPermissions(role) {
       return role == 'admin'
         ? ['manage_employees', 'manage_permissions', 'manage_clients', 'manage_assignments']
-        // A Social Media account staffs the roles beneath it and distributes
-        // clients, carrying the same lower-employee authority a Sub Admin has.
-        : role == 'social_media'
+        // A Sub Admin account staffs the roles beneath it and distributes
+        // clients.
+        : role == 'sub_admin'
           ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
-          : role == 'sub_admin'
+          : role == 'social_media'
             ? ['manage_lower_employees', 'manage_clients', 'manage_assignments']
             : role == 'senior_technical'
               ? ['manage_junior_employees', 'manage_assignments']
