@@ -804,6 +804,11 @@ async function createClient(caller, input) {
   const paymentDate =
     input.paymentDate || input.date || new Date().toISOString().slice(0, 10);
   const workTime = normalizeWorkTime(input.workTime);
+  // "Assigned at" is captured on the Add client form for the Social Media role
+  // only; it records whether the client is worked in the day or night shift.
+  const assignedShift = ["day", "night"].includes(String(input.assignedShift || "").toLowerCase())
+    ? String(input.assignedShift).toLowerCase()
+    : "";
   // The Add client form may attach several files. Each one is uploaded to Cloud
   // Storage and the record keeps a `documents` array of { name, type, url,
   // path }. The legacy single-file fields (document / documentName /
@@ -862,6 +867,7 @@ async function createClient(caller, input) {
     createdAt: serverTimestamp(),
     workTime,
     workShift: workShiftFromTime(workTime),
+    ...(assignedShift ? { assignedShift } : {}),
     status,
     amount,
     totalAmount: amount,

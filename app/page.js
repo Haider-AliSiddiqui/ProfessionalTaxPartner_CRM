@@ -72,6 +72,13 @@ function workShiftLabel(client) {
   return shift || "";
 }
 
+// "Assigned at" is the day/night shift a Social Media user selects when adding a
+// client. Stored lowercase; exported as a title-cased label.
+function assignedAtLabel(client) {
+  const value = String(client?.assignedShift || "").trim().toLowerCase();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "";
+}
+
 function DateCell({ date, client }) {
   const shift = workShiftLabel(client);
   return <div className="date-stack"><span>{date || "-"}</span>{shift && <small className={`shift-tag ${shift.toLowerCase()}`}><i />{shift}</small>}</div>;
@@ -162,8 +169,8 @@ function pendingTone(value) {
 }
 
 function downloadExcelRecords(records) {
-  const headers = ["S.NO", "Date", "Shift", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Description", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
-  const rows = records.map((client, index) => [index + 1, client.date || "", workShiftLabel(client), client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.description || "", client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
+  const headers = ["S.NO", "Date", "Shift", "Assigned At", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Description", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
+  const rows = records.map((client, index) => [index + 1, client.date || "", workShiftLabel(client), assignedAtLabel(client), client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.description || "", client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
   const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -381,7 +388,7 @@ export function CrmWorkspace({ initialSession }) {
   const [employeeToDelete, setEmployeeToDelete] = useState(null);
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
-  const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), workTime: new Date().toTimeString().slice(0, 5), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "", usedFor: "" });
+  const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), workTime: new Date().toTimeString().slice(0, 5), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", assignedShift: "", amount: "", received: "", usedFor: "" });
   const [clientDocuments, setClientDocuments] = useState([]);
   const [isSavingDocuments, setIsSavingDocuments] = useState(false);
   const [clientEditForm, setClientEditForm] = useState({ id: "", date: "", workTime: "", name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", totalAmount: "", totalReceived: "", usedFor: "" });
@@ -659,6 +666,7 @@ export function CrmWorkspace({ initialSession }) {
     try {
       const result = await requestApi("clients", "POST", {
         assignedTo: clientForm.assignedTo,
+        ...(session.role === "social_media" ? { assignedShift: clientForm.assignedShift } : {}),
         date: clientForm.date,
         workTime: clientForm.workTime,
         name: clientForm.name.trim(),
@@ -680,7 +688,7 @@ export function CrmWorkspace({ initialSession }) {
         usedFor: clientForm.usedFor.trim(),
         color: "mint",
       });
-      setClientForm({ date: new Date().toISOString().slice(0, 10), workTime: new Date().toTimeString().slice(0, 5), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", amount: "", received: "", usedFor: "" });
+      setClientForm({ date: new Date().toISOString().slice(0, 10), workTime: new Date().toTimeString().slice(0, 5), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", assignedShift: "", amount: "", received: "", usedFor: "" });
       setClientDocuments([]);
       setModal(null);
       setActiveNav("Clients");
@@ -1007,6 +1015,7 @@ export function CrmWorkspace({ initialSession }) {
               <PasswordField label="Password" name="password" value={clientForm.password} onChange={(event) => setClientForm({ ...clientForm, password: event.target.value })} placeholder="Client password" minLength={6} autoComplete="new-password" />
               <label>Email<input required type="email" value={clientForm.email} onChange={(event) => setClientForm({ ...clientForm, email: event.target.value })} placeholder="client@email.com" /></label>
               <label>Work<input required value={clientForm.work} onChange={(event) => setClientForm({ ...clientForm, work: event.target.value })} placeholder="e.g. NTN Registration" /></label>
+              {session.role === "social_media" && <label>Assigned at<select required value={clientForm.assignedShift} onChange={(event) => setClientForm({ ...clientForm, assignedShift: event.target.value })}><option value="">Select shift</option><option value="day">Day</option><option value="night">Night</option></select></label>}
               <label className="description-field">Description (optional)<textarea value={clientForm.description} onChange={(event) => setClientForm({ ...clientForm, description: event.target.value })} placeholder="Client requirements or notes" rows={3} /></label>
               <label className="document-field">Add documents (optional)
                 <input type="file" multiple onChange={selectClientDocument} />
