@@ -1,0 +1,22 @@
+[debug] [2026-10-14T08:03:23.588Z] ----------------------------------------------------------------------
+[debug] [2026-10-14T08:03:23.597Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js projects:list
+[debug] [2026-10-14T08:03:23.598Z] CLI Version:   15.33.0
+[debug] [2026-10-14T08:03:23.599Z] Platform:      win32
+[debug] [2026-10-14T08:03:23.599Z] Node Version:  v22.19.0
+[debug] [2026-10-14T08:03:23.600Z] Detected Agent: unknown
+[debug] [2026-10-14T08:03:23.600Z] Time:          Wed Oct 14 2026 13:03:23 GMT+0500 (Pakistan Standard Time)
+[debug] [2026-10-14T08:03:23.600Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-14T08:03:23.619Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-10-14T08:03:24.108Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-14T08:03:24.151Z] Error: Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.
+    at GoogleAuth.getApplicationDefaultAsync (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:287:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async GoogleAuth._GoogleAuth_determineClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:834:32)
+    at async GoogleAuth.getClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:698:20)
+    at async GoogleAuth.getAccessToken (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:722:24)
+    at async autoAuth (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:38:19)
+    at async Object.requireAuth [as fn] (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:100:20)
+    at async C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\command.js:278:17
+[error] 
+[error] Error: Failed to authenticate, have you run firebase login?

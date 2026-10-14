@@ -432,7 +432,10 @@ async function getClientRecords(profile, teamProfiles) {
         amount,
         received,
         remaining: Math.max(amount - received, 0),
-        payment: data.paymentStatus || data.payment || "Pending",
+        // Derived from the amounts instead of trusting the stored value: rows
+        // written before the status rule changed still carry "Partial", and an
+        // outstanding balance must always read as "Pending".
+        payment: amount > 0 && received >= amount ? "Received" : "Pending",
         workTime,
         workShift: workShiftFromTime(workTime),
       };
@@ -876,6 +879,25 @@ async function findClientByIdentity(transaction, identity) {
   );
 }
 
+// Mirrors canManageClientRecord in firestore.rules: Admin owns every client, a
+// creator/assigner owns their own, and a Sub Admin / Social Media owns the
+// clients assigned to the team beneath them. Kept in step with the rules so a
+// save the UI offers is never rejected at the database layer.
+async function canManageClientRecord(caller, client) {
+  if (caller.role === "admin") return true;
+  if ((client.assignedBy || client.createdBy) === caller.uid) return true;
+  if (
+    caller.role !== "sub_admin" &&
+    caller.role !== "social_media"
+  ) {
+    return false;
+  }
+  const assignedTo = client.assignedTo;
+  if (!assignedTo || typeof assignedTo !== "string") return false;
+  const managed = await getManagedProfiles(caller);
+  return managed.some((employee) => employee.uid === assignedTo);
+}
+
 async function createClient(caller, input) {
   if (!hasPermission(caller, "manage_assignments")) {
     throw new Error("Your account does not have permission to assign clients.");
@@ -919,12 +941,10 @@ async function createClient(caller, input) {
   const status = ["New", "Pending", "In Progress", "Completed", "Cancelled"].includes(input.status)
     ? input.status
     : "Pending";
+  // A client is only "Received" once the full total is paid. Any unpaid balance
+  // keeps the payment status "Pending" so the remaining amount stays visible.
   const paymentStatus =
-    received >= amount && amount > 0
-      ? "Received"
-      : received > 0
-        ? "Partial"
-        : "Pending";
+    received >= amount && amount > 0 ? "Received" : "Pending";
   // The duplicate check must not read the cached record set: a write in another
   // tab or by another user leaves this session's cache up to CACHE_TTL_MS stale,
   // so the same client could be saved twice. Instead the check runs on live data
@@ -1089,11 +1109,8 @@ async function updateClient(caller, input) {
   }
   const client = snapshot.data();
   if (input.action === "delete") {
-    if (
-      caller.role !== "admin" &&
-      (client.assignedBy || client.createdBy) !== caller.uid
-    ) {
-      throw new Error("You are not authorized to delete this client; only its assigner can delete it.");
+    if (!(await canManageClientRecord(caller, client))) {
+      throw new Error("You are not authorized to delete this client; only its assigner or a manager can delete it.");
     }
     const [payments, services] = await Promise.all([
       getDocs(query(collection(db, "payments"), where("clientId", "==", clientId))),
@@ -1110,11 +1127,8 @@ async function updateClient(caller, input) {
     return { clientId, deleted: true };
   }
   if (input.action === "edit") {
-    if (
-      caller.role !== "admin" &&
-      (client.assignedBy || client.createdBy) !== caller.uid
-    ) {
-      throw new Error("You are not authorized to edit this client; only its assigner can edit it.");
+    if (!(await canManageClientRecord(caller, client))) {
+      throw new Error("You are not authorized to edit this client; only its assigner or a manager can edit it.");
     }
     const name = String(input.name || "").trim();
     const provider = String(input.provider || "").trim();
@@ -1151,12 +1165,10 @@ async function updateClient(caller, input) {
     if (duplicate) {
       throw new Error("Another client already uses this CNIC or email.");
     }
+    // Only a fully paid client shows "Received"; anything short of the total
+    // stays "Pending" so the outstanding balance is never hidden.
     const paymentStatus =
-      totalReceived >= totalAmount && totalAmount > 0
-        ? "Received"
-        : totalReceived > 0
-          ? "Partial"
-          : "Pending";
+      totalReceived >= totalAmount && totalAmount > 0 ? "Received" : "Pending";
     const workTime = normalizeWorkTime(input.workTime);
     await runTransaction(db, async (transaction) => {
       const currentSnapshot = await transaction.get(clientRef);
@@ -1299,7 +1311,7 @@ async function createPayment(caller, input) {
       throw new Error("The payment exceeds the client's remaining balance.");
     }
     const remaining = totalAmount - totalReceived;
-    const paymentStatus = remaining === 0 ? "Received" : "Partial";
+    const paymentStatus = remaining === 0 ? "Received" : "Pending";
     const nextClientStatus =
       remaining === 0
         ? "Completed"
@@ -1416,7 +1428,7 @@ async function dispatch(profile, path, method, input) {
           const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
           const totalReceived = (Number(client.totalReceived ?? client.received) || 0) + (Number(payment.amount) || 0);
           const remaining = Math.max(totalAmount - totalReceived, 0);
-          const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Partial";
+          const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Pending";
           const nextStatus = remaining === 0
             ? "Completed"
             : ["New", "Pending", "In Progress"].includes(client.status)

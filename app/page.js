@@ -279,6 +279,15 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     "Excel records": { title: "Excel records", subtitle: "Completed records available within your permission scope.", action: "Download Excel" },
   };
   const meta = sectionMeta[section] || sectionMeta.Clients;
+  // Mirrors canManageClientRecord on the server and in firestore.rules: Admin owns
+  // every client, a creator/assigner owns their own, and a Sub Admin / Social Media
+  // owns the clients assigned to the team beneath them. Without this the button
+  // was hidden for a team client even though the save itself is allowed.
+  const managedUids = new Set((employeeRecords || []).map((employee) => employee.uid));
+  const canManageClient = (client) =>
+    isAdmin ||
+    (client.assignedBy || client.createdBy) === currentUid ||
+    ((role === "Sub Admin" || role === "Social Media") && managedUids.has(client.assignedTo));
   const [permissionEmployeeUid, setPermissionEmployeeUid] = useState("");
   const [permissionDrafts, setPermissionDrafts] = useState([]);
   // Tables paint this many rows at a time. A 14-column table with thousands of
@@ -355,7 +364,7 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && (isAdmin || (client.assignedBy || client.createdBy) === currentUid)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && canManageClient(client)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
       {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{tableRows.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Payment At:</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td>{payment.usedFor || "-"}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
@@ -470,7 +479,14 @@ export function CrmWorkspace({ initialSession }) {
           initials: client.initials || client.name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "",
           color: client.color || "mint",
           status: client.status || "Pending",
-          payment: client.paymentStatus || client.payment || "Pending",
+          // Derived from the amounts rather than trusting the stored value: rows
+          // written before the status rule changed still carry "Partial", and an
+          // outstanding balance must always read as "Pending".
+          payment:
+            Number(client.totalAmount ?? client.amount) > 0 &&
+            Number(client.totalReceived ?? client.received) >= Number(client.totalAmount ?? client.amount)
+              ? "Received"
+              : "Pending",
         })).sort((first, second) => String(second.date || "").localeCompare(String(first.date || ""))));
       }
       if (employeeResult) {
@@ -754,15 +770,29 @@ export function CrmWorkspace({ initialSession }) {
       await requestApi("clients", "PATCH", { ...clientEditForm, clientId: clientEditForm.id, action: "edit" });
       setModal(null);
       const nextRemote = { ...clientEditForm, id: clientEditForm.id, name: clientEditForm.name, provider: clientEditForm.provider };
-      setClientRecords((current) => current.map((record) => record.id === nextRemote.id
-        ? {
+      setClientRecords((current) => current.map((record) => {
+        if (record.id !== nextRemote.id) return record;
+        const totalAmount = Number(nextRemote.totalAmount) || 0;
+        const totalReceived = Number(nextRemote.totalReceived) || 0;
+        const remaining = Math.max(totalAmount - totalReceived, 0);
+        // Mirror the server rule: only a fully paid client is "Received"; any
+        // unpaid balance after an edit must immediately show "Pending".
+        const payment = remaining === 0 && totalAmount > 0 ? "Received" : "Pending";
+        return {
           ...record,
           ...nextRemote,
-          amount: Number(nextRemote.totalAmount) || 0,
-          received: Number(nextRemote.totalReceived) || 0,
+          amount: totalAmount,
+          received: totalReceived,
+          remaining,
+          payment,
           workShift: workShiftFromTime(nextRemote.workTime),
-        }
-        : record));
+          status: remaining === 0 && totalAmount > 0
+            ? "Completed"
+            : ["New", "Pending", "In Progress"].includes(record.status)
+              ? "In Progress"
+              : record.status,
+        };
+      }));
       setActiveNav("Clients");
       loadSection(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
     } catch (error) {
@@ -958,7 +988,7 @@ export function CrmWorkspace({ initialSession }) {
             amount: totalAmount,
             received: totalReceived,
             remaining,
-            payment: remaining === 0 && totalAmount > 0 ? "Received" : "Partial",
+            payment: remaining === 0 && totalAmount > 0 ? "Received" : "Pending",
             status: remaining === 0 ? "Completed" : ["New", "Pending", "In Progress"].includes(record.status) ? "In Progress" : record.status,
           };
         }));
@@ -1029,7 +1059,7 @@ export function CrmWorkspace({ initialSession }) {
           <LiveOverview clients={scope.clients} isLoading={isLoading} />
 
           {activeNav === "Overview" ? <>
-          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid)} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
+          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid || ((session.role === "sub_admin" || session.role === "social_media") && scopedEmployees.some((employee) => employee.uid === client.assignedTo)))} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
           </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEditEmployee={openEmployeeEdit} onDeleteEmployee={openEmployeeDelete} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
@@ -1128,6 +1158,9 @@ export function CrmWorkspace({ initialSession }) {
               <label>Payment At:<input required value={paymentForm.usedFor} onChange={(event) => setPaymentForm({ ...paymentForm, usedFor: event.target.value })} placeholder="ee" /></label>
             </div>
             <p className="form-note"><Icon name="shield" size={14} /> Partial and multiple payments update the remaining balance automatically.</p>
+            {/* The page-level alert sits behind this dialog, so a failed save would
+                otherwise look like nothing happened. Surface it here too. */}
+            {dataError && <p className="form-error" role="alert">{dataError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "payment" ? "Saving..." : "Save payment"}</button></div>
           </form>}
         </div>

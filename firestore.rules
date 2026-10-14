@@ -58,8 +58,14 @@ service cloud.firestore {
         : permission in defaultPermissions(profile.role);
     }
 
+    // The caller's own active check. activeUser() pays for an exists() plus a
+    // get(); here one get() proves both existence and status, because
+    // myProfile() already dereferences the same document. A payment transaction
+    // evaluates several rules against a 10-document access budget, and the
+    // duplicated reads pushed a Sub Admin over the limit (an Admin short-circuits
+    // before those reads, so the failure looked role-specific).
     function hasActiveRole() {
-      return signedIn() && activeUser(request.auth.uid);
+      return signedIn() && myProfile().status == 'active';
     }
 
     // Anonymous password recovery lookup. The client must repeat the exact email
@@ -284,6 +290,19 @@ service cloud.firestore {
       return data.assignedBy == request.auth.uid || data.createdBy == request.auth.uid;
     }
 
+    // Full client-record authority. Admin owns everything; a creator/assigner owns
+    // their own clients; and a Sub Admin / Social Media owns the clients assigned
+    // to the team beneath them (the same reporting chain canAccessClient uses to
+    // make those records visible). Writes and reads therefore stay in step.
+    function canManageClientRecord(data) {
+      return myProfile().role == 'admin'
+        || isClientCreator(data)
+        || (data.assignedTo is string
+          && myProfile().role in ['sub_admin', 'social_media']
+          && exists(/databases/$(database)/documents/users/$(data.assignedTo))
+          && isManagedByCaller(get(/databases/$(database)/documents/users/$(data.assignedTo)).data));
+    }
+
     function canUpdateClientStatus(oldData, newData) {
       return canAccessClient(oldData)
         && newData.diff(oldData).affectedKeys().hasOnly(['status', 'updatedBy', 'updatedAt'])
@@ -302,6 +321,19 @@ service cloud.firestore {
         && newData.assignmentHistory is list;
     }
 
+    // Payment ownership, with the caller's role passed in. The payment create and
+    // the client update run as one transaction against Firestore's 10-document
+    // access budget, and each myProfile() is a separate access, so the caller
+    // resolves that read exactly once and shares it with this helper.
+    function canPayClient(oldData, myRole) {
+      let assignedTo = oldData.get('assignedTo', null);
+      return myRole == 'admin'
+        || assignedTo == request.auth.uid
+        || (assignedTo is string
+          && roleRank(myRole) >= 0
+          && roleRank(get(/databases/$(database)/documents/users/$(assignedTo)).data.role) > roleRank(myRole));
+    }
+
     function canUpdateClientPayment(oldData, newData, clientId) {
       let paymentId = newData.lastPaymentId;
       let oldTotalAmount = oldData.get('totalAmount', null);
@@ -312,7 +344,9 @@ service cloud.firestore {
       let previousReceived = oldTotalReceived is number
         ? oldTotalReceived
         : oldData.get('received', 0);
-      return canAccessClient(oldData)
+      let profile = myProfile();
+      return profile.status == 'active'
+        && canPayClient(oldData, profile.role)
         && newData.diff(oldData).affectedKeys().hasOnly([
           'amount', 'totalAmount', 'received', 'totalReceived', 'remaining',
           'status', 'payment', 'paymentStatus', 'paymentDate', 'usedFor',
@@ -332,13 +366,18 @@ service cloud.firestore {
 
     function canCreatePayment(data, paymentId) {
       let clientPath = /databases/$(database)/documents/clients/$(data.clientId);
-      let client = getAfter(clientPath).data;
-      let previousReceived = exists(clientPath)
-        ? (get(clientPath).data.get('totalReceived', null) is number
-          ? get(clientPath).data.get('totalReceived', 0)
-          : get(clientPath).data.get('received', 0))
-        : 0;
-      return hasActiveRole()
+      // One read of the client document covers both the before and after image:
+      // transaction.get() on the same path inside a rule does not double-charge,
+      // and the payment transaction writes the client atomically. Reading it once
+      // keeps this rule inside Firestore's 10-document access budget, which the
+      // previous exists()+get() pair blew for a Sub Admin.
+      let clientExists = exists(clientPath);
+      let client = get(clientPath).data;
+      let previousReceived = clientExists && client.get('totalReceived', null) is number
+        ? client.get('totalReceived', 0)
+        : (clientExists ? client.get('received', 0) : 0);
+      let profile = myProfile();
+      return profile.status == 'active'
         && data.recordedBy == request.auth.uid
         && data.amount is number
         && data.amount > 0
@@ -346,16 +385,13 @@ service cloud.firestore {
         && data.usedFor is string
         && data.usedFor.size() > 0
         && data.usedFor.size() <= 200
-        && existsAfter(clientPath)
+        && clientExists
         && client.lastPaymentId == paymentId
         && client.assignedTo == data.assignedTo
-        && (exists(clientPath)
-          ? client.totalReceived == previousReceived + data.amount
-          : client.totalReceived == data.amount)
-        && (myProfile().role == 'admin'
-          || client.assignedTo == request.auth.uid
-          || (roleRank(get(/databases/$(database)/documents/users/$(client.assignedTo)).data.role) > roleRank(myProfile().role)
-            && isManagedByCaller(get(/databases/$(database)/documents/users/$(client.assignedTo)).data)));
+        && client.totalReceived == previousReceived + data.amount
+        // Share the profile read with the ownership check so the two halves of one
+        // payment transaction stay well under Firestore's 10-document access limit.
+        && canPayClient(client, profile.role);
     }
 
     function canDeleteLinkedRecord(clientId) {
@@ -420,14 +456,22 @@ service cloud.firestore {
     match /clients/{clientId} {
       allow get, list: if canAccessClient(resource.data);
       allow create: if canCreateClient(request.resource.data);
+      // Order matters: Firestore evaluates the branches left to right and stops at
+      // the first true one, and each branch spends from the same 10-document
+      // access budget. canUpdateClientPayment is put before the full-edit branch
+      // because the edit branch reads the caller profile, the assignee and their
+      // reporting chain; letting it run first exhausted the budget for a Sub Admin
+      // while an Admin short-circuited earlier. A payment update's key set never
+      // matches the full-edit branch anyway, so this only saves accesses.
       allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status', 'updatedBy', 'updatedAt'
         ]) && canUpdateClientStatus(resource.data, request.resource.data)
         || request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'assignedTo', 'assignedBy', 'assignedAt', 'assignmentHistory'
         ]) && canUpdateClientAssignment(resource.data, request.resource.data)
+        || canUpdateClientPayment(resource.data, request.resource.data, clientId)
         || (hasActiveRole()
-          && (myProfile().role == 'admin' || isClientCreator(resource.data))
+          && canManageClientRecord(resource.data)
           && (hasPermission('manage_clients') || hasPermission('manage_assignments'))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
@@ -439,10 +483,9 @@ service cloud.firestore {
           && request.resource.data.cell is string
           && request.resource.data.cell.matches('^[0-9]{11}$')
           && request.resource.data.cnic is string
-          && request.resource.data.cnic.matches('^[0-9]{13}$')
-        || canUpdateClientPayment(resource.data, request.resource.data, clientId);
+          && request.resource.data.cnic.matches('^[0-9]{13}$');
       allow delete: if hasActiveRole()
-        && (myProfile().role == 'admin' || isClientCreator(resource.data));
+        && canManageClientRecord(resource.data);
     }
 
     match /payments/{paymentId} {

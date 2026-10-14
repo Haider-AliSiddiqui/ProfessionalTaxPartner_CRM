@@ -269,6 +269,7 @@ td { border-top: 1px solid #eef1ef; padding: 12px 21px; color: #687570; font-siz
 .form-grid input:focus, .form-grid select:focus { border-color: #8ac8bb; box-shadow: 0 0 0 3px #e5f4f0; }
 .form-note { display: flex; align-items: center; gap: 7px; color: #7c8984; background: #f2f8f5; border-radius: 7px; padding: 10px; margin: 19px 0 0; font-size: 10px; }
 .form-note svg { color: var(--teal); flex-shrink: 0; }
+.form-error { color: #b4482f; background: #fdf1ee; border: 1px solid #f2d5cd; border-radius: 7px; padding: 10px; margin: 12px 0 0; font-size: 10px; font-weight: 600; }
 .secondary-button { border: 1px solid var(--line); background: #fff; color: #74807b; padding: 11px 15px; border-radius: 8px; font-size: 11px; font-weight: 700; }
 .client-form-grid { grid-template-columns: repeat(3, 1fr); }
 .client-record-table { min-width: 1240px !important; }
