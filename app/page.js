@@ -168,6 +168,115 @@ function pendingTone(value) {
   return "money-cell money-zero";
 }
 
+// One row per employee, built from the client records the caller is already
+// allowed to read. A JN Technical only ever receives their own clients, so this
+// collapses to a single bar; a manager receives the team's clients and sees one
+// bar per person. Either way the numbers describe that employee's own work.
+function buildWorkReport(clients, employees) {
+  const byAssignee = new Map();
+  clients.forEach((client) => {
+    const key = client.assignedTo || client.owner || "unassigned";
+    const current = byAssignee.get(key) || {
+      key,
+      name: client.owner || "Unassigned",
+      total: 0,
+      completed: 0,
+      inProgress: 0,
+      pending: 0,
+      received: 0,
+      outstanding: 0,
+    };
+    const amount = Number(client.amount) || 0;
+    const received = Number(client.received) || 0;
+    current.total += 1;
+    if (client.status === "Completed") current.completed += 1;
+    else if (client.status === "In Progress") current.inProgress += 1;
+    else if (client.status === "Pending") current.pending += 1;
+    current.received += received;
+    current.outstanding += Math.max(amount - received, 0);
+    byAssignee.set(key, current);
+  });
+  // Employees with no clients in scope still deserve a bar at zero, so their
+  // report never silently disappears. The directory name wins over the record's
+  // denormalised owner name, which can be stale after a rename.
+  const nameByUid = new Map((employees || []).map((employee) => [employee.uid, employee.name]));
+  const rows = [...byAssignee.values()].map((row) => ({ ...row, name: nameByUid.get(row.key) || row.name }));
+  const seen = new Set(rows.map((row) => row.key));
+  (employees || []).forEach((employee) => {
+    if (seen.has(employee.uid)) return;
+    seen.add(employee.uid);
+    rows.push({ key: employee.uid, name: employee.name, total: 0, completed: 0, inProgress: 0, pending: 0, received: 0, outstanding: 0 });
+  });
+  return rows.sort((a, b) => b.total - a.total || b.received - a.received || a.name.localeCompare(b.name));
+}
+
+function WorkReportChart({ clients, employees, role, previewName }) {
+  const rows = useMemo(() => buildWorkReport(clients, employees), [clients, employees]);
+  if (rows.length === 0) {
+    return <div className="empty-state">No client records assigned within your scope yet.</div>;
+  }
+  const completion = (row) => row.total ? Math.round(row.completed / row.total * 100) : 0;
+  const totals = rows.reduce((acc, row) => ({
+    total: acc.total + row.total,
+    completed: acc.completed + row.completed,
+    received: acc.received + row.received,
+    outstanding: acc.outstanding + row.outstanding,
+  }), { total: 0, completed: 0, received: 0, outstanding: 0 });
+
+  return <div className="work-report">
+    <div className="work-report-summary">
+      <article><span>{previewName ? `${previewName}'s clients` : "Clients in scope"}</span><strong>{totals.total}</strong></article>
+      <article><span>Completed</span><strong>{totals.completed}</strong></article>
+      <article><span>Received</span><strong className={receivedTone(totals.received)}>{formatMoney(totals.received)}</strong></article>
+      <article><span>Outstanding</span><strong className={pendingTone(totals.outstanding)}>{formatMoney(totals.outstanding)}</strong></article>
+    </div>
+    <div className="work-report-heading"><h3>{rows.length === 1 ? `${rows[0].name} — work overview` : "Work overview by employee"}</h3><p>{rows.length === 1 ? `Scoped to the ${role} view` : "Client load and payment progress for each employee in your scope"}</p></div>
+    <div className="employee-chart-grid">
+      {rows.map((row) => <article className="employee-chart-card" key={row.key}>
+        <header className="employee-chart-header">
+          <div className="work-report-person"><div className="owner-avatar">{row.name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase()}</div><div><strong>{row.name}</strong><span>Individual performance · All records</span></div></div>
+          <span className="completion-chip">{completion(row)}% completed</span>
+        </header>
+        <div className="employee-chart-body">
+          <ReportColumns title="Work performance" items={[
+            { label: "Assigned", value: row.total, color: "#647caa" },
+            { label: "Completed", value: row.completed, color: "#197f73" },
+            { label: "In progress", value: row.inProgress, color: "#e8b74b" },
+            { label: "Pending", value: row.pending, color: "#e88974" },
+            { label: "Other", value: row.total - row.completed - row.inProgress - row.pending, color: "#a6b3b0" },
+          ]} />
+          <ReportColumns title="Payment overview" money items={[
+            { label: "Received", value: row.received, color: "#197f73" },
+            { label: "Outstanding", value: row.outstanding, color: "#e88974" },
+          ]} />
+        </div>
+        <footer className="employee-chart-footer"><span>{row.total} assigned clients</span><span>{row.total === 0 ? "No work assigned yet" : `${row.completed} completed · ${row.inProgress + row.pending} awaiting completion`}</span></footer>
+      </article>)}
+    </div>
+  </div>;
+}
+
+function ReportColumns({ title, items, money = false }) {
+  const largest = Math.max(1, ...items.map((item) => item.value));
+  const magnitude = 10 ** Math.floor(Math.log10(largest));
+  const step = Math.max(money ? 0.25 : 1, Math.ceil(largest / magnitude / 4) * magnitude);
+  const maximum = step * 4;
+  const formatTick = (value) => money ? (value >= 1000000 ? `${value / 1000000}m` : value >= 1000 ? `${value / 1000}k` : String(value)) : String(value);
+  return <section className="report-columns" aria-label={title}>
+    <div className="report-columns-title"><h4>{title}</h4><span>{money ? "PKR" : "CLIENTS"}</span></div>
+    <div className="report-plot">
+      <div className="report-gridlines" aria-hidden="true">{[4, 3, 2, 1, 0].map((tick) => <div key={tick}><span>{formatTick(tick * step)}</span><i /></div>)}</div>
+      <div className="report-column-groups">{items.map((item) => <div className="report-column-slot" key={item.label}>
+        <button type="button" className="report-column" style={{ height: `${item.value / maximum * 100}%`, "--bar-color": item.color }} aria-label={`${item.label}: ${money ? formatMoney(item.value) : item.value}`}>
+          <span className="report-column-value">{formatTick(item.value)}</span>
+          <span className="report-column-tooltip">{item.label}<strong>{money ? formatMoney(item.value) : `${item.value} clients`}</strong></span>
+        </button>
+        <span className="report-column-label">{item.label}</span>
+      </div>)}</div>
+    </div>
+  </section>;
+}
+
 function downloadExcelRecords(records) {
   const headers = ["S.NO", "Date", "Shift", "Assigned At", "Client Name", "Client Provider", "Cell", "CNIC", "PIN", "Password", "Email", "Work", "Description", "Total Amount", "Received Amount", "Remaining Amount", "Payment Status"];
   const rows = records.map((client, index) => [index + 1, client.date || "", workShiftLabel(client), assignedAtLabel(client), client.name, client.provider, client.cell || "", client.cnic || "", client.pin || "", client.password || "", client.email || "", client.work || client.provider, client.description || "", client.amount || 0, client.received || 0, Math.max((client.amount || 0) - (client.received || 0), 0), client.payment || "Pending"]);
@@ -302,8 +411,8 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
   const normalizedQuery = query.toLowerCase();
   const scopedEmployees = employeeRecords;
   const matchingClients = useMemo(
-    () => clients.filter((client) => `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
-    [clients, normalizedQuery],
+    () => clients.filter((client) => (section !== "Reports" || isAdmin || client.assignedTo === currentUid) && `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
+    [clients, normalizedQuery, section, isAdmin, currentUid],
   );
   const filteredClients = useMemo(() => (
     section === "Excel records"
@@ -323,8 +432,11 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     [serviceRecords, normalizedQuery],
   );
   const filteredPayments = useMemo(
-    () => paymentRecords.filter((payment) => `${payment.clientName} ${payment.date} ${payment.usedFor || ""}`.toLowerCase().includes(normalizedQuery)),
-    [paymentRecords, normalizedQuery],
+    () => {
+      const reportClientIds = new Set(filteredClients.map((client) => client.id));
+      return paymentRecords.filter((payment) => (section !== "Reports" || reportClientIds.has(payment.clientId)) && `${payment.clientName} ${payment.date} ${payment.usedFor || ""}`.toLowerCase().includes(normalizedQuery));
+    },
+    [paymentRecords, normalizedQuery, filteredClients, section],
   );
   // Assignment targets are filtered on assignableRoleOptions, not
   // employeeRoleOptions: the latter is the (empty, for Social Media) set of
@@ -368,7 +480,10 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
       {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{tableRows.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Payment At:</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td>{payment.usedFor || "-"}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
-      {section === "Reports" && <div className="empty-workspace"><div className="workspace-icon"><Icon name="chart" size={24} /></div><h3>Authorized operations report</h3><p>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received.</p><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>}
+      {section === "Reports" && <div className="work-report-panel">
+        <WorkReportChart clients={filteredClients} employees={isAdmin ? scopedEmployees : [{ uid: currentUid, name: clients.find((client) => client.assignedTo === currentUid)?.owner || "My performance" }]} role={role} previewName={readOnlyPreview ? role.replace(/^Preview:\s*/, "") : ""} />
+        <div className="work-report-footer"><span>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received</span><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>
+      </div>}
       {((section === "Employees" && filteredEmployees.length === 0) || (section === "Clients" && filteredClients.length === 0) || (section === "Services" && filteredServices.length === 0)) && <div className="empty-state">No authorized {section.toLowerCase()} match this search.</div>}
     </div>
   </section>;
@@ -428,7 +543,7 @@ export function CrmWorkspace({ initialSession }) {
   const canAddClient = sessionPermissions.includes("manage_assignments");
   const visibleNavItems = navItems.filter(([label]) => {
     if (label === "Employees") return canManageEmployees || sessionPermissions.includes("manage_assignments");
-    if (session?.role === "jn_technical") return ["Overview", "Clients", "Services", "Payments", "Excel records"].includes(label);
+    if (session?.role === "jn_technical") return ["Overview", "Clients", "Services", "Payments", "Reports", "Excel records"].includes(label);
     return true;
   });
 
@@ -1109,9 +1224,11 @@ export function CrmWorkspace({ initialSession }) {
               <label>Payment At (optional)<input value={clientEditForm.usedFor} onChange={(event) => setClientEditForm({ ...clientEditForm, usedFor: event.target.value })} placeholder="e.g. Easypaisa" /></label>
               <label className="description-field">Description (optional)<textarea value={clientEditForm.description} onChange={(event) => setClientEditForm({ ...clientEditForm, description: event.target.value })} rows={3} /></label>
             </div>
+            {dataError && <p className="form-error" role="alert">{dataError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "edit-client" ? "Saving..." : "Save changes"}</button></div>
           </form> : modal === "delete-client" ? <div>
             <p id="delete-client-description" className="form-note delete-warning">This will permanently delete <strong>{clientToDelete?.name}</strong>, all its payment records, and linked services. This action cannot be undone.</p>
+            {dataError && <p className="form-error" role="alert">{dataError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" disabled={savingAction !== null} onClick={() => { setModal(null); setClientToDelete(null); }}>Cancel</button><button type="button" className="danger-button" disabled={savingAction !== null} onClick={deleteClient}>{savingAction === "delete-client" ? "Deleting..." : "Delete permanently"}</button></div>
           </div> : modal === "delete-employee" ? <div>
             <p id="delete-employee-description" className="form-note delete-warning">This will <strong>permanently delete {employeeToDelete?.name}</strong> from the employee directory. This action cannot be undone. If any clients are still assigned to this employee, reassign them first.</p>

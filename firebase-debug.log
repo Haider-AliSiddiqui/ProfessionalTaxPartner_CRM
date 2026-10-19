@@ -20,3 +20,67 @@
     at async C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\command.js:278:17
 [error] 
 [error] Error: Failed to authenticate, have you run firebase login?
+[debug] [2026-10-14T10:29:54.960Z] ----------------------------------------------------------------------
+[debug] [2026-10-14T10:29:54.981Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js projects:list
+[debug] [2026-10-14T10:29:54.981Z] CLI Version:   15.33.0
+[debug] [2026-10-14T10:29:54.981Z] Platform:      win32
+[debug] [2026-10-14T10:29:54.982Z] Node Version:  v22.19.0
+[debug] [2026-10-14T10:29:54.982Z] Detected Agent: unknown
+[debug] [2026-10-14T10:29:54.982Z] Time:          Wed Oct 14 2026 15:29:54 GMT+0500 (Pakistan Standard Time)
+[debug] [2026-10-14T10:29:54.983Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-14T10:29:55.022Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-10-14T10:29:55.468Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-14T10:29:55.503Z] Error: Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.
+    at GoogleAuth.getApplicationDefaultAsync (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:287:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async GoogleAuth._GoogleAuth_determineClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:834:32)
+    at async GoogleAuth.getClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:698:20)
+    at async GoogleAuth.getAccessToken (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:722:24)
+    at async autoAuth (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:38:19)
+    at async Object.requireAuth [as fn] (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:100:20)
+    at async C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\command.js:278:17
+[error] 
+[error] Error: Failed to authenticate, have you run firebase login?
+[debug] [2026-10-17T07:49:11.470Z] ----------------------------------------------------------------------
+[debug] [2026-10-17T07:49:11.476Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only firestore:rules --dry-run
+[debug] [2026-10-17T07:49:11.477Z] CLI Version:   15.33.0
+[debug] [2026-10-17T07:49:11.477Z] Platform:      win32
+[debug] [2026-10-17T07:49:11.477Z] Node Version:  v22.19.0
+[debug] [2026-10-17T07:49:11.478Z] Detected Agent: unknown
+[debug] [2026-10-17T07:49:11.478Z] Time:          Sat Oct 17 2026 12:49:11 GMT+0500 (Pakistan Standard Time)
+[debug] [2026-10-17T07:49:11.478Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-17T07:49:11.495Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-10-17T07:49:14.973Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-17T07:49:15.006Z] Error: Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.
+    at GoogleAuth.getApplicationDefaultAsync (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:287:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async GoogleAuth._GoogleAuth_determineClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:834:32)
+    at async GoogleAuth.getClient (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:698:20)
+    at async GoogleAuth.getAccessToken (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\google-auth-library\build\src\auth\googleauth.js:722:24)
+    at async autoAuth (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:38:19)
+    at async requireAuth (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requireAuth.js:100:20)
+    at async requirePermissions (C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\requirePermissions.js:12:5)
+    at async C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\command.js:278:17
+[error] 
+[error] Error: Failed to authenticate, have you run firebase login?
+[debug] [2026-10-17T07:49:33.795Z] ----------------------------------------------------------------------
+[debug] [2026-10-17T07:49:33.800Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\TECHNOSELLERS\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js emulators:exec --only firestore --project demo-test echo RULES_OK
+[debug] [2026-10-17T07:49:33.800Z] CLI Version:   15.33.0
+[debug] [2026-10-17T07:49:33.801Z] Platform:      win32
+[debug] [2026-10-17T07:49:33.801Z] Node Version:  v22.19.0
+[debug] [2026-10-17T07:49:33.801Z] Detected Agent: unknown
+[debug] [2026-10-17T07:49:33.802Z] Time:          Sat Oct 17 2026 12:49:33 GMT+0500 (Pakistan Standard Time)
+[debug] [2026-10-17T07:49:33.802Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-17T07:49:33.817Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-10-17T07:49:35.605Z] Could not find VSCode notification endpoint: TypeError: fetch failed. If you are not running the Firebase SQL Connect VSCode extension, this is expected and not an issue.
+[info] i  emulators: Shutting down emulators. {"metadata":{"emulator":{"name":"hub"},"message":"Shutting down emulators."}}
+[debug] [2026-10-17T07:49:35.610Z] Could not find VSCode notification endpoint: TypeError: fetch failed. If you are not running the Firebase SQL Connect VSCode extension, this is expected and not an issue.
+[debug] [2026-10-17T07:49:35.611Z] Error: spawn java ENOENT
+    at ChildProcess._handle.onexit (node:internal/child_process:285:19)
+    at onErrorNT (node:internal/child_process:483:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+[error] 
+[error] Error: Could not spawn `java -version`. Please make sure Java is installed and on your system PATH.

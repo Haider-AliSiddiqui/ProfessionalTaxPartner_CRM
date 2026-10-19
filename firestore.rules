@@ -50,8 +50,15 @@ service cloud.firestore {
               : [];
     }
 
+    // The caller profile is passed in when the caller already resolved it, so a
+    // rule that also reads the profile (e.g. canManageClientRecord) does not pay
+    // for the same document twice. Firestore does not cache get() across a rule
+    // evaluation, and each repeat pushed a Sub Admin over the 10-document budget.
     function hasPermission(permission) {
-      let profile = myProfile();
+      return hasPermissionWithProfile(permission, myProfile());
+    }
+
+    function hasPermissionWithProfile(permission, profile) {
       let permissions = profile.get('permissions', null);
       return permissions is list
         ? permission in permissions
@@ -292,15 +299,35 @@ service cloud.firestore {
 
     // Full client-record authority. Admin owns everything; a creator/assigner owns
     // their own clients; and a Sub Admin / Social Media owns the clients assigned
-    // to the team beneath them (the same reporting chain canAccessClient uses to
-    // make those records visible). Writes and reads therefore stay in step.
+    // to the staff beneath them. "Beneath them" is the role rank, not the direct
+    // reporting chain: the workspace lists a Sub Admin's / Social Media's team by
+    // the same role filter (getManagedProfiles -> getTeamProfiles in
+    // app/lib/crm-data.js), so a chain-only check here would offer an Edit button
+    // the database then rejected — the save failed and the dialog never closed.
+    // Writes and reads therefore stay in step.
+
+    // True when the assignee is an active account of a role the caller outranks.
+    // One get() covers both the rank comparison and the active check, which keeps
+    // a client edit inside Firestore's 10-document access budget.
+    function managesAssignee(assignedTo, myRole) {
+      return assignedTo is string
+        && exists(/databases/$(database)/documents/users/$(assignedTo))
+        && roleRank(get(/databases/$(database)/documents/users/$(assignedTo)).data.role) > roleRank(myRole)
+        && activeUser(assignedTo);
+    }
+
     function canManageClientRecord(data) {
-      return myProfile().role == 'admin'
+      return canManageClientRecordWithProfile(data, myProfile());
+    }
+
+    // Takes the already-resolved caller profile so the role comparisons below do
+    // not each spend another document access. The assignee still costs one
+    // exists() plus the role get().
+    function canManageClientRecordWithProfile(data, profile) {
+      return profile.role == 'admin'
         || isClientCreator(data)
-        || (data.assignedTo is string
-          && myProfile().role in ['sub_admin', 'social_media']
-          && exists(/databases/$(database)/documents/users/$(data.assignedTo))
-          && isManagedByCaller(get(/databases/$(database)/documents/users/$(data.assignedTo)).data));
+        || (profile.role in ['sub_admin', 'social_media']
+          && managesAssignee(data.get('assignedTo', null), profile.role));
     }
 
     function canUpdateClientStatus(oldData, newData) {
@@ -470,9 +497,11 @@ service cloud.firestore {
           'assignedTo', 'assignedBy', 'assignedAt', 'assignmentHistory'
         ]) && canUpdateClientAssignment(resource.data, request.resource.data)
         || canUpdateClientPayment(resource.data, request.resource.data, clientId)
-        || (hasActiveRole()
-          && canManageClientRecord(resource.data)
-          && (hasPermission('manage_clients') || hasPermission('manage_assignments'))
+        || ((let profile = myProfile();
+          profile.status == 'active'
+            && canManageClientRecordWithProfile(resource.data, profile)
+            && (hasPermissionWithProfile('manage_clients', profile)
+              || hasPermissionWithProfile('manage_assignments', profile)))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'date', 'name', 'provider', 'cell', 'cnic', 'pin', 'password',
             'email', 'work', 'description', 'document', 'documentName', 'documentType', 'documents',
