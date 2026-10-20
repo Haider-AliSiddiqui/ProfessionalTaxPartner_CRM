@@ -88,13 +88,78 @@ function limitDigits(value, length) {
   return String(value).replace(/\D/g, "").slice(0, length);
 }
 
-function ClientRowActions({ client, canManage, onEditClient, onDeleteClient }) {
-  if (!canManage) return null;
-
+function ClientRowActions({ client, canManage, onViewClient, onEditClient, onDeleteClient }) {
   return <div className="client-row-actions">
-    <button type="button" className="text-button" onClick={() => onEditClient(client)}>Edit</button>
-    <button type="button" className="client-delete-button" onClick={() => onDeleteClient(client)}>Delete</button>
+    <button type="button" className="text-button client-view-button" title="View client details" onClick={() => onViewClient(client)}><Icon name="arrow" size={14} /></button>
+    {canManage && <>
+      <button type="button" className="text-button" onClick={() => onEditClient(client)}>Edit</button>
+      <button type="button" className="client-delete-button" onClick={() => onDeleteClient(client)}>Delete</button>
+    </>}
   </div>;
+}
+
+// Popup that shows every stored field of one client record.
+function ClientDetailsModal({ client, onClose }) {
+  if (!client) return null;
+  const pending = Math.max(client.amount - client.received, 0);
+  const personalRows = [
+    ["Cell", client.cell], ["CNIC", client.cnic], ["PIN", client.pin],
+    ["Password", client.password], ["Email", client.email], ["Date", client.date],
+  ];
+  const workRows = [
+    ["Provider", client.provider], ["Work time", client.workTime || workShiftLabel(client) || "-"], ["Assigned at", assignedAtLabel(client) || "-"],
+    ["Assigned to", client.owner || "-"], ["Total amount", formatMoney(client.amount), "money"], ["Received", formatMoney(client.received), "money positive"],
+    ["Pending", formatMoney(pending), pending > 0 ? "money pending" : "money positive"],
+  ];
+  const documents = clientDocuments(client);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="modal-card client-details-card" role="dialog" aria-modal="true" aria-labelledby="client-details-title">
+      <div className="modal-header">
+        <div className="client-details-avatar-row">
+          <div className={`client-avatar ${client.color}`}>{client.initials || client.name?.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase() || "?"}</div>
+          <div className="meta"><strong id="client-details-title">{client.name}</strong><span>{client.id}</span></div>
+          <div className="client-details-badges">
+            <span className={`status-badge ${String(client.status || "active").toLowerCase().replace(" ", "-")}`}><i />{client.status || "Active"}</span>
+            <span className={`payment-badge ${String(client.payment || "pending").toLowerCase()}`}>{client.payment || "Pending"}</span>
+          </div>
+        </div>
+        <button className="modal-close" onClick={onClose} aria-label="Close dialog">&times;</button>
+      </div>
+      <div className="client-details-body">
+        <div className="client-details-section">
+          <strong>Personal details</strong>
+          <dl className="client-details-grid">
+            {personalRows.map(([label, value]) => <div key={label} className="client-details-item"><dt>{label}</dt><dd>{value ? String(value) : "-"}</dd></div>)}
+          </dl>
+        </div>
+        <div className="client-details-section">
+          <strong>Work & payment</strong>
+          <dl className="client-details-grid">
+            {workRows.map(([label, value, tone]) => <div key={label} className="client-details-item"><dt>{label}</dt><dd className={tone}>{value ? String(value) : "-"}</dd></div>)}
+            {client.work && client.work !== client.provider ? <div className="client-details-item wide"><dt>Work</dt><dd>{client.work}</dd></div> : null}
+            {client.description ? <div className="client-details-item wide"><dt>Description</dt><dd>{client.description}</dd></div> : null}
+          </dl>
+        </div>
+        <div className="client-details-section">
+          <strong>Documents</strong>
+          {documents.length ? <ul className="document-list">{documents.map((document, index) => <li key={`${document.name}-${index}`}><DocumentLinkItem document={document} /></li>)}</ul> : <div className="client-details-empty"><dd className="document-empty">No documents uploaded</dd></div>}
+        </div>
+      </div>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Close</button></div>
+    </div>
+  </div>;
+}
+
+function DocumentLinkItem({ document }) {
+  return <button
+    type="button"
+    className="document-link"
+    title={document.name || "Open document"}
+    onClick={() => openDocumentInNewTab(document)}
+  >
+    <Icon name="file" size={14} />
+    <span className="document-link-name">{document.name || "Document"}</span>
+  </button>;
 }
 
 function clientDocuments(client) {
@@ -120,16 +185,7 @@ function DocumentLink({ client }) {
   const documents = clientDocuments(client);
   if (!documents.length) return <span className="document-empty">-</span>;
 
-  return <div className="document-list">{documents.map((document, index) => <button
-    key={`${document.name}-${index}`}
-    type="button"
-    className="document-link"
-    title={document.name || "Open document"}
-    onClick={() => openDocumentInNewTab(document)}
-  >
-    <Icon name="file" size={14} />
-    <span className="document-link-name">{document.name || "Document"}</span>
-  </button>)}</div>;
+  return <div className="document-list">{documents.map((document, index) => <DocumentLinkItem key={`${document.name}-${index}`} document={document} />)}</div>;
 }
 
 function LiveOverview({ clients, isLoading }) {
@@ -378,7 +434,7 @@ async function loadTeamList(user, requestApi, recordCacheRef, setEmployeeRecords
   setAssignableEmployeeRecords((result.assignableEmployees || result.employees).map(formatEmployee));
 }
 
-function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onEditClient, onDeleteClient, onEditEmployee, onDeleteEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, assignableRoleOptions, readOnlyPreview, isAdmin }) {
+function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onViewClient, onEditClient, onDeleteClient, onEditEmployee, onDeleteEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, assignableRoleOptions, readOnlyPreview, isAdmin }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -476,7 +532,7 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && canManageClient(client)} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && canManageClient(client)} onViewClient={onViewClient} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
       {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{tableRows.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
       {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Payment At:</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td>{payment.usedFor || "-"}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
@@ -509,6 +565,7 @@ export function CrmWorkspace({ initialSession }) {
   const [dataError, setDataError] = useState("");
   const [modal, setModal] = useState(null);
   const [clientToDelete, setClientToDelete] = useState(null);
+  const [clientToView, setClientToView] = useState(null);
   const [employeeToDelete, setEmployeeToDelete] = useState(null);
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
@@ -758,6 +815,22 @@ export function CrmWorkspace({ initialSession }) {
     return matchesQuery && matchesFilter;
   }), [scope.clients, query, filter]);
 
+  // Overview table pagination: 10 clients per page. Resetting to page 1 whenever
+  // the filtered set shrinks past the current page keeps the view valid after a
+  // search, filter change, or data refresh.
+  const OVERVIEW_PAGE_SIZE = 10;
+  const [overviewPage, setOverviewPage] = useState(1);
+  const overviewPageCount = Math.max(1, Math.ceil(visibleClients.length / OVERVIEW_PAGE_SIZE));
+  const currentOverviewPage = Math.min(overviewPage, overviewPageCount);
+  const pagedOverviewClients = useMemo(() => visibleClients.slice(
+    (currentOverviewPage - 1) * OVERVIEW_PAGE_SIZE,
+    currentOverviewPage * OVERVIEW_PAGE_SIZE,
+  ), [visibleClients, currentOverviewPage]);
+  const setOverviewPageSafe = (page) => setOverviewPage(Math.min(Math.max(1, page), overviewPageCount));
+  // No effect needed to reset the page on search/filter changes: the displayed
+  // page is clamped against the current page count, so a shrinking result set
+  // simply renders its last valid page instead of an empty one.
+
   const openModal = (type) => {
     if (type === "client") {
       setClientDocuments([]);
@@ -952,6 +1025,9 @@ export function CrmWorkspace({ initialSession }) {
   const openClientDelete = (client) => {
     setClientToDelete(client);
     setModal("delete-client");
+  };
+  const openClientView = (client) => {
+    setClientToView(client);
   };
   const deleteClient = async () => {
     if (!clientToDelete || submitLock.current) return;
@@ -1174,10 +1250,11 @@ export function CrmWorkspace({ initialSession }) {
           <LiveOverview clients={scope.clients} isLoading={isLoading} />
 
           {activeNav === "Overview" ? <>
-          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{visibleClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid || ((session.role === "sub_admin" || session.role === "social_media") && scopedEmployees.some((employee) => employee.uid === client.assignedTo)))} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{visibleClients.length}</strong> of <strong>{scope.clients.length}</strong> authorized clients</span><div className="pagination"><button disabled>‹</button><button className="current">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEditEmployee={openEmployeeEdit} onDeleteEmployee={openEmployeeDelete} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
+          <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{pagedOverviewClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && (session.role === "admin" || (client.assignedBy || client.createdBy) === session.uid || ((session.role === "sub_admin" || session.role === "social_media") && scopedEmployees.some((employee) => employee.uid === client.assignedTo)))} onViewClient={openClientView} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{pagedOverviewClients.length}</strong> of <strong>{visibleClients.length}</strong> authorized clients</span><div className="pagination"><button disabled={currentOverviewPage <= 1} onClick={() => setOverviewPageSafe(currentOverviewPage - 1)}>‹</button>{Array.from({ length: overviewPageCount }, (_, index) => index + 1).map((page) => <button key={page} className={page === currentOverviewPage ? "current" : ""} onClick={() => setOverviewPageSafe(page)}>{page}</button>)}<button disabled={currentOverviewPage >= overviewPageCount} onClick={() => setOverviewPageSafe(currentOverviewPage + 1)}>›</button></div></div></section>
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onViewClient={openClientView} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEditEmployee={openEmployeeEdit} onDeleteEmployee={openEmployeeDelete} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
+      {clientToView && <ClientDetailsModal client={clientToView} onClose={() => setClientToView(null)} />}
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(null); setClientToDelete(null); setEmployeeToDelete(null); } }}>
         <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === "delete-client" ? "delete-client-description" : modal === "delete-employee" ? "delete-employee-description" : undefined}>
           <div className="modal-header"><div><p className="eyebrow">{modal === "client" ? "Client assignment" : modal === "delete-client" || modal === "edit-client" ? "Client record" : modal === "payment" ? "Payment entry" : modal === "service" ? "Service management" : "Team access"}</p><h2 id="modal-title">{modal === "client" ? "Add new client" : modal === "delete-client" ? "Delete client permanently?" : modal === "delete-employee" ? "Delete employee permanently?" : modal === "employee" ? "Add new employee" : modal === "edit-client" ? "Edit client" : modal === "edit-employee" ? "Edit employee" : modal === "reset-employee-password" ? "Reset employee password" : modal === "service" ? "Add service" : "Record payment"}</h2></div><button className="modal-close" onClick={() => { setModal(null); setClientToDelete(null); setEmployeeToDelete(null); }} aria-label="Close dialog">&times;</button></div>

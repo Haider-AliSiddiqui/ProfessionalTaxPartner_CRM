@@ -374,3 +374,29 @@ td { border-top: 1px solid #eef1ef; padding: 12px 21px; color: #687570; font-siz
 .danger-button { border: 0; border-radius: 8px; padding: 11px 15px; background: #b84134; color: #fff; font-size: 11px; font-weight: 700; }
 .danger-button:hover:not(:disabled) { background: #963126; }
 .danger-button:disabled { cursor: wait; opacity: .65; }
+/* Client details popup: opened by the arrow button in each client row. */
+.client-view-button { border: 0; background: #e5f4f0; color: #2c7263; border-radius: 7px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.client-view-button:hover { background: #d5ece6; color: #1d5a4c; }
+.client-details-card { width: min(620px, 100%); }
+.client-details-card .modal-header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.client-details-avatar-row { display: flex; align-items: center; gap: 13px; }
+.client-details-avatar-row .client-avatar { width: 46px; height: 46px; font-size: 15px; flex: none; }
+.client-details-avatar-row .meta { min-width: 0; }
+.client-details-avatar-row .meta strong { display: block; font: 700 15px Manrope; letter-spacing: -.3px; color: #22302b; }
+.client-details-avatar-row .meta span { display: block; color: #8a938f; font-size: 11px; margin-top: 2px; }
+.client-details-badges { display: flex; gap: 7px; margin-left: auto; flex: none; }
+
+.client-details-section { margin-top: 20px; }
+.client-details-section > strong { display: block; margin: 0 0 10px; color: #22302b; font: 700 12px Manrope; letter-spacing: .3px; }
+.client-details-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 14px; margin: 0; }
+.client-details-item { background: #f7faf8; border: 1px solid #edf2ef; border-radius: 9px; padding: 10px 12px; min-width: 0; }
+.client-details-item.wide { grid-column: 1 / -1; }
+.client-details-item dt { margin: 0 0 4px; color: #93a09a; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; }
+.client-details-item dd { margin: 0; color: #2c3833; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.client-details-item dd.money { font: 700 13px Manrope; }
+.client-details-item dd.money.positive { color: #2c7263; }
+.client-details-item dd.money.pending { color: #c46f5d; }
+
+@media (max-width: 640px) { .client-details-grid { grid-template-columns: repeat(2, 1fr); } }
+.client-details-empty { margin: 0; }
+.client-details-empty .document-empty { display: block; background: #f7faf8; border: 1px solid #edf2ef; border-radius: 9px; padding: 10px 12px; }
