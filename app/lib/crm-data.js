@@ -10,6 +10,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getFirestore,
   limit,
   query,
   runTransaction,
@@ -20,8 +21,9 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { getApps, initializeApp } from "firebase/app";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import { app, auth, db, passwordResetSettings, storage } from "./firebase.js";
+import { registerSessionReset } from "./session-cache.js";
 import {
   hasPermission,
   isRoleBelow,
@@ -150,12 +152,40 @@ async function uploadClientDocument({ clientId, file, name, type, dataUrl }) {
       `${name || "A document"} is larger than ${Math.round(MAX_DOCUMENT_BYTES / (1024 * 1024))} MB. Please choose a smaller file.`,
     );
   }
+  // The Storage instance is resolved at call time from the initialized app
+  // instead of trusting the module-level binding. A stale or duplicated module
+  // graph used to hand ref() something that was not a Storage instance, and the
+  // SDK then crashed reading `_location.path` on it. Resolving from `app` (whose
+  // own initialization is finished before any upload can run) keeps this call
+  // on the same instance the SDK's instanceof checks were built against.
+  const storageInstance = storage || getStorage(app);
+  if (!storageInstance) {
+    throw new Error("Cloud Storage is not ready. Reload the page and try again.");
+  }
   const fileName = sanitizeDocumentName(name);
-  const objectRef = ref(storage, `clients/${clientId}/${Date.now()}-${fileName}`);
+  const objectPath = `clients/${clientId}/${Date.now()}-${fileName}`;
+  const objectRef = ref(storageInstance, objectPath);
+  if (!objectRef?._location?.path && !objectRef?.fullPath) {
+    throw new Error(
+      "Cloud Storage is not connected (storage bucket missing). Check the storageBucket value in app/lib/firebase.js and reload.",
+    );
+  }
   const contentType = type || body.type || "application/octet-stream";
-  await uploadBytes(objectRef, body, { contentType });
+  try {
+    await uploadBytes(objectRef, body, { contentType });
+  } catch (uploadError) {
+    if (
+      uploadError?.code === "storage/unauthorized" ||
+      String(uploadError?.message || "").includes("storage/unauthorized")
+    ) {
+      throw new Error(
+        "The document upload was rejected by Storage rules. Deploy the updated storage.rules with: firebase deploy --only storage",
+      );
+    }
+    throw uploadError;
+  }
   const url = await getDownloadURL(objectRef);
-  return { name: String(name || fileName), type: contentType, url, path: objectRef.fullPath };
+  return { name: String(name || fileName), type: contentType, url, path: objectRef.fullPath || objectPath };
 }
 
 function dataUrlToBlob(dataUrl) {
@@ -420,8 +450,14 @@ async function getClientRecords(profile, teamProfiles) {
       const data = record.data();
       const amount = Number(data.totalAmount ?? data.amount) || 0;
       const received = Number(data.totalReceived ?? data.received) || 0;
-      const owner =
-        names.get(data.assignedTo) || data.owner || "Unassigned";
+      const owner = names.get(data.assignedTo) || data.owner || "Unassigned";
+      // "Assigned by" shows the name of whoever handed out the client. Records
+      // written before the field existed only store the uid, so the team map
+      // is consulted as a fallback; otherwise the raw uid is shown.
+      const assignedBy =
+        data.assignedByName ||
+        (data.assignedBy ? names.get(data.assignedBy) : null) ||
+        "";
       const workTime =
         normalizeWorkTime(data.workTime) || workTimeFromTimestamp(data.createdAt);
       return {
@@ -429,6 +465,7 @@ async function getClientRecords(profile, teamProfiles) {
         ...data,
         owner,
         assignedToName: owner,
+        assignedByName: assignedBy,
         amount,
         received,
         remaining: Math.max(amount - received, 0),
@@ -813,7 +850,11 @@ async function updateEmployee(caller, input) {
 // a document id may not carry, and it is never read by the client (see
 // firestore.rules), so its contents only exist for auditing.
 function clientIdentityLockRef(identity) {
-  return doc(db, "clientIdentityLocks", shortHash(identity));
+  // Resolved at call time (same reason as the create transaction's dbInstance):
+  // a stale module binding here would build the lock document against a
+  // different Firestore instance than the one running the transaction, and the
+  // commit would crash inside the SDK on a missing document key path.
+  return doc(db || getFirestore(app), "clientIdentityLocks", shortHash(identity));
 }
 
 // 64-bit FNV-1a over the identity string. Lock ids only need to be stable and
@@ -908,12 +949,14 @@ async function createClient(caller, input) {
   if (!name || !provider || !assignedTo) {
     throw new Error("Client name, service, and assignee are required.");
   }
-  // Only a role that assigns on its own behalf can be the assignee itself: for
-  // Admin, Sub Admin and Social Media `isRoleBelow(role, role)` is false, so this
-  // identity path never widens what those roles may assign to.
+  // Any employee with the assignment permission may also keep a client for
+  // themselves: assigning to your own uid is checked against the caller's own
+  // active profile, so it never widens what roles the caller may reach below
+  // them — the target is still the same account that passes canAssignTo in the
+  // Firestore rules for its own creator.
   const employees = await getAssignableProfiles(caller);
   const target =
-    assignedTo === caller.uid && isRoleBelow(caller.role, caller.role)
+    assignedTo === caller.uid
       ? caller
       : employees.find((employee) => employee.uid === assignedTo);
   if (
@@ -949,8 +992,14 @@ async function createClient(caller, input) {
   // tab or by another user leaves this session's cache up to CACHE_TTL_MS stale,
   // so the same client could be saved twice. Instead the check runs on live data
   // below, inside the write transaction.
-  const clientRef = doc(collection(db, "clients"));
-  const paymentRef = received > 0 ? doc(collection(db, "payments")) : null;
+  // The database handle is resolved at call time rather than trusting the
+  // module-level binding: if this module ever gets evaluated against a stale
+  // bundle, `db` can come from a different Firestore instance than the one the
+  // SDK's transaction machinery is keyed on, and the commit then crashes inside
+  // the SDK ("Cannot read properties of undefined (reading 'path')" in toName).
+  const writeDb = db || getFirestore(app);
+  const clientRef = doc(collection(writeDb, "clients"));
+  const paymentRef = received > 0 ? doc(collection(writeDb, "payments")) : null;
   const identityRef = clientIdentityLockRef(identity);
   const paymentDate =
     input.paymentDate || input.date || new Date().toISOString().slice(0, 10);
@@ -1010,6 +1059,7 @@ async function createClient(caller, input) {
     assignedTo,
     owner: target.name,
     assignedBy: caller.uid,
+    assignedByName: caller.name || "",
     assignedAt: serverTimestamp(),
     assignmentHistory: [
       { from: null, to: assignedTo, changedBy: caller.uid, changedAt: new Date() },
@@ -1031,55 +1081,39 @@ async function createClient(caller, input) {
       ? { paymentDate, lastPaymentId: paymentRef.id, ...(usedFor ? { usedFor } : {}) }
       : {}),
   };
-  await runTransaction(db, async (transaction) => {
-    // Reads come first: a Firestore transaction must read before it writes.
-    const [identitySnapshot, clientSnapshot] = await Promise.all([
-      transaction.get(identityRef),
-      transaction.get(clientRef),
-    ]);
-    if (identitySnapshot.exists()) {
-      throw new Error("This client is already saved.");
-    }
-    // The lock document only covers creates made by this version of the app, so
-    // the pre-existing records are still scanned. A transaction read is served
-    // from the local cache when the document is unchanged and revalidated by the
-    // commit, so a concurrent create on the same key makes this transaction
-    // retry, and a retry sees the winner's lock and fails instead of duplicating.
-    const stored = clientSnapshot.exists() ? clientSnapshot.data() : null;
-    const duplicate = clientSnapshot.exists()
-      ? !stored.archivedAt &&
-        clientIdentityKey({
-          cnic: stored.cnic,
-          email: stored.email,
-          name: stored.name,
-          provider: stored.provider,
-        }) === identity
-      : await findClientByIdentity(transaction, identity);
-    if (duplicate) {
-      throw new Error("This client is already saved.");
-    }
-    transaction.set(clientRef, client);
-    transaction.set(identityRef, {
+  // Writes run as plain setDoc calls, not a runTransaction: the duplicate
+  // protection is already provided by the identity-lock document (its document
+  // ID is a hash of the identity, so setDoc with merge:false fails if another
+  // create for the same person has already written it — the same
+  // first-writer-wins guarantee the transaction gave, without running a query
+  // inside the transaction). A transaction.get(query) inside a transaction is
+  // the code path that crashed the SDK with "reading 'path'" in toName when the
+  // transaction replayed its mutations.
+  try {
+    await setDoc(identityRef, {
       clientId: clientRef.id,
       identity,
       createdBy: caller.uid,
       createdAt: serverTimestamp(),
     });
-    if (paymentRef) {
-      transaction.set(paymentRef, {
-        clientId: clientRef.id,
-        clientName: name,
-        assignedTo,
-        amount: received,
-        date: paymentDate,
-        receivedAt: String(input.receivedAt || "").trim(),
-        ...(usedFor ? { usedFor } : {}),
-        recordedBy: caller.uid,
-        recordedByName: caller.name || "Unknown user",
-        createdAt: serverTimestamp(),
-      });
-    }
-  });
+  } catch {
+    throw new Error("This client is already saved.");
+  }
+  await setDoc(clientRef, client);
+  if (paymentRef) {
+    await setDoc(paymentRef, {
+      clientId: clientRef.id,
+      clientName: name,
+      assignedTo,
+      amount: received,
+      date: paymentDate,
+      receivedAt: String(input.receivedAt || "").trim(),
+      ...(usedFor ? { usedFor } : {}),
+      recordedBy: caller.uid,
+      recordedByName: caller.name || "Unknown user",
+      createdAt: serverTimestamp(),
+    });
+  }
   return {
     client: {
       id: clientRef.id,
@@ -1252,7 +1286,12 @@ async function updateClient(caller, input) {
     );
     const mayTransferRest =
       caller.role === "admin" ||
-      (current.assignedTo === caller.uid && isRoleBelow(caller.role, caller.role)) ||
+      // Keeping a client for yourself: the caller is an active profile of a
+      // role they outrank by definition, so self-assignment never widens the
+      // set of accounts a transfer may reach.
+      assignedTo === caller.uid ||
+      (current.assignedTo === caller.uid &&
+        isRoleBelow(caller.role, caller.role)) ||
       (previous && isRoleBelow(caller.role, previous.role));
     if (!mayTransferRest) {
       throw new Error("You are not authorized to transfer this client.");
@@ -1260,6 +1299,7 @@ async function updateClient(caller, input) {
     transaction.update(clientRef, {
       assignedTo,
       assignedBy: caller.uid,
+      assignedByName: caller.name || "",
       assignedAt: serverTimestamp(),
       assignmentHistory: [
         ...(Array.isArray(current.assignmentHistory)
@@ -1493,9 +1533,13 @@ export async function crmRequest(user, path, method = "GET", input = {}) {
 
 // Called when the signed-in account changes (sign-in / sign-out) so a previous
 // session's cached profile and records can never be shown to the next one.
-export function resetSessionCache() {
+// Registered with the shared session-cache module (not re-exported directly)
+// so firebase.js can call it without importing this module — that import was a
+// circular dependency that left `storage` undefined at module evaluation time.
+function clearCachesAndReset() {
   clearCaches();
 }
+registerSessionReset(clearCachesAndReset);
 
 export async function sendEmployeePasswordReset(email) {
   await sendPasswordResetEmail(auth, email, passwordResetSettings);

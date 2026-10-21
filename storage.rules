@@ -80,8 +80,14 @@ service firebase.storage {
                 || isManagedByCaller(get(/databases/(default)/documents/users/$(clientData().assignedTo)).data))));
       }
 
-      // Uploading is part of creating a client, so it needs the same permission
-      // the client write itself demands.
+      // Uploading is part of creating a client, and the upload happens BEFORE
+      // the client document is written to Firestore (the id is generated first,
+      // then documents upload, then the create transaction commits). A brand-new
+      // client therefore has no Firestore document yet, so isLiveClient() would
+      // always deny the first upload and every client add with documents would
+      // fail. The create permission itself (manage_assignments) is what vetts
+      // the upload; access checks only apply to uploads against an existing
+      // client record.
       function hasManageAssignments() {
         let profile = myProfile();
         return profile.permissions is list
@@ -89,10 +95,19 @@ service firebase.storage {
           : profile.role in ['admin', 'sub_admin', 'social_media', 'senior_technical'];
       }
 
+      function canUploadClientDocument() {
+        return hasActiveRole()
+          && hasManageAssignments()
+          && request.resource.size < 10 * 1024 * 1024
+          && (!exists(/databases/(default)/documents/clients/$(clientId))
+            || (isLiveClient() && (myProfile().role == 'admin'
+              || clientData().assignedTo == request.auth.uid
+              || clientData().assignedBy == request.auth.uid
+              || clientData().createdBy == request.auth.uid)));
+      }
+
       allow read: if canAccessClient();
-      allow create: if canAccessClient()
-        && hasManageAssignments()
-        && request.resource.size < 10 * 1024 * 1024;
+      allow create: if canUploadClientDocument();
       allow delete: if canAccessClient() && hasManageAssignments();
       // Documents are immutable once uploaded: replacing one would silently
       // change what an existing client record points at.

@@ -2,7 +2,7 @@ import { getApps, initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { resetSessionCache } from "./crm-data.js";
+import { resetSessionCache } from "./session-cache.js";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyDBY_yf9bL0_W2utjKGDP4CI2A7xPbcJDI",

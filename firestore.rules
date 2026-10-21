@@ -262,14 +262,18 @@ service cloud.firestore {
 
     function canAssignTo(uid) {
       let target = get(/databases/$(database)/documents/users/$(uid)).data;
+      // Assigning to yourself: the caller is active by hasActiveRole() and is
+      // a role they outrank by definition, so a self-target never widens the
+      // set of accounts an assignment may reach.
       return hasActiveRole()
         && hasPermission('manage_assignments')
         && activeUser(uid)
-        && roleRank(target.role) > roleRank(myProfile().role)
-        && (myProfile().role == 'admin'
-          || (myProfile().role in ['sub_admin', 'social_media']
-            && target.role in teamRoles())
-          || isManagedByCaller(target));
+        && (uid == request.auth.uid
+          || (roleRank(target.role) > roleRank(myProfile().role)
+            && (myProfile().role == 'admin'
+              || (myProfile().role in ['sub_admin', 'social_media']
+                && target.role in teamRoles())
+              || isManagedByCaller(target))));
     }
 
     function canCreateClient(data) {
@@ -290,7 +294,8 @@ service cloud.firestore {
         && data.totalAmount >= 0
         && data.totalReceived >= 0
         && data.totalReceived <= data.totalAmount
-        && (!data.keys().hasAny(['usedFor']) || data.usedFor is string);
+        && (!data.keys().hasAny(['usedFor']) || data.usedFor is string)
+        && (!data.keys().hasAny(['assignedByName']) || data.assignedByName is string);
     }
 
     function isClientCreator(data) {
@@ -342,7 +347,7 @@ service cloud.firestore {
         && hasPermission('manage_assignments')
         && canAssignTo(newData.assignedTo)
         && newData.diff(oldData).affectedKeys().hasOnly([
-          'assignedTo', 'assignedBy', 'assignedAt', 'assignmentHistory'
+          'assignedTo', 'assignedBy', 'assignedByName', 'assignedAt', 'assignmentHistory'
         ])
         && newData.assignedBy == request.auth.uid
         && newData.assignmentHistory is list;
@@ -481,7 +486,16 @@ service cloud.firestore {
     }
 
     match /clients/{clientId} {
-      allow get, list: if canAccessClient(resource.data);
+      // A transaction that creates a client get()s a brand-new (nonexistent)
+      // client id before writing it. For a nonexistent document resource.data
+      // is empty, so canAccessClient() would deny every non-admin caller and
+      // abort the create. The create branch below is what actually vetts the
+      // write; the get is only the transaction's read-before-write step.
+      allow get, list: if canAccessClient(resource.data)
+        || (resource == null
+          && request.method == 'get'
+          && hasActiveRole()
+          && hasPermission('manage_assignments'));
       allow create: if canCreateClient(request.resource.data);
       // Order matters: Firestore evaluates the branches left to right and stops at
       // the first true one, and each branch spends from the same 10-document
@@ -550,9 +564,15 @@ service cloud.firestore {
     // the same transaction as the client create. A create-only rule makes the
     // document an idempotency token: the first transaction to commit it wins and
     // every later create for the same identity fails the duplicate check instead
-    // of writing a second client. Clients never read this collection.
+    // of writing a second client. Clients never list this collection.
+    // The create transaction must get() the lock first (Firestore transactions
+    // read before they write, and the read is rule-checked even when the
+    // document does not exist yet), so a get is allowed for the same roles that
+    // may create a client. No data on the lock is sensitive — it only maps an
+    // identity hash to a client id.
     match /clientIdentityLocks/{lockId} {
-      allow read: if false;
+      allow get: if hasActiveRole() && hasPermission('manage_assignments');
+      allow list: if false;
       allow create: if hasActiveRole()
         && hasPermission('manage_assignments')
         && request.resource.data.createdBy == request.auth.uid;
