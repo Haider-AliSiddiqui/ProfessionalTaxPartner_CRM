@@ -211,6 +211,30 @@ service cloud.firestore {
         && canReadUser(uid, data);
     }
 
+    // Direct reports for the staffing chain (getManagedProfiles in
+    // app/lib/crm-data.js). A managerUid/createdBy query carries no role filter,
+    // so the rule must match its exact shape and hold the staffing permission
+    // the chain walk is scoped to. Can ReadUser still re-checks every returned
+    // document against the caller's rank and team, so a wider or unfiltered
+    // managerUid query stays denied even here.
+    function isManagedChainQuery() {
+      let filter = request.query;
+      return (filter.get('managerUid', null) is string
+          || filter.get('createdBy', null) is string)
+        && filter.get('status', null) == null
+        && filter.get('role', null) == null
+        && filter.get('limit', null) == null;
+    }
+
+    function canListManagedChain(uid, data) {
+      return hasActiveRole()
+        && isManagedChainQuery()
+        && (myProfile().role in ['admin', 'senior_technical']
+          || (myProfile().role in ['sub_admin', 'social_media']
+            && hasPermission('manage_lower_employees')))
+        && canReadUser(uid, data);
+    }
+
     function canSeeEmployee(uid) {
       return uid == request.auth.uid
         || (exists(/databases/$(database)/documents/users/$(uid))
@@ -249,14 +273,32 @@ service cloud.firestore {
         && newData.phone is string;
     }
 
+    // Strict owner scope (§3/§5): a Senior Technical / Social Media caller
+    // queries clients where assignedTo == self (the assignedTo "in" branch)
+    // or assignedBy == self (the clients they personally handed out). No other
+    // role is granted the assignedBy branch, so their lists stay denied there.
     function canAccessClient(data) {
+      // Legacy-record scope (§7): access is derived only from the fields an
+      // existing document actually carries — assignedTo, assignedBy, createdBy,
+      // plus the assignee's role rank and reporting chain. A missing
+      // assignedByUid NEVER widens access; a legacy record whose assignee
+      // cannot be resolved as the caller or the caller's staff simply stays
+      // Admin/Sub-Admin-only (the role-rank branch below), never visible to a
+      // normal employee that had no relationship to it.
       return hasActiveRole()
         && (myProfile().role == 'admin'
           || data.assignedTo == request.auth.uid
+          || ((myProfile().role in ['senior_technical', 'social_media']
+            && data.assignedBy == request.auth.uid)
           || (data.assignedTo is string
             && roleRank(myProfile().role) >= 0
             && roleRank(get(/databases/$(database)/documents/users/$(data.assignedTo)).data.role) > roleRank(myProfile().role)
-            && (myProfile().role in ['sub_admin', 'social_media']
+            // Only a Sub Admin keeps team-wide client visibility. A Social
+            // Media account is scoped strictly to its own clients (§5): its
+            // own assignedTo records, the clients it personally assigned, and
+            // only the direct reporting chain it staffed — never the whole
+            // rank band.
+            && (myProfile().role == 'sub_admin'
               || isManagedByCaller(get(/databases/$(database)/documents/users/$(data.assignedTo)).data))));
     }
 
@@ -281,6 +323,11 @@ service cloud.firestore {
         && hasPermission('manage_assignments')
         && data.createdBy == request.auth.uid
         && data.assignedBy == request.auth.uid
+        // Assignment ownership (§6) is stamped and verified on every create,
+        // so the read rules can always trust assignedByUid/assignedByRole on
+        // anything written after this rule shipped.
+        && data.assignedByUid == request.auth.uid
+        && data.assignedByRole == myProfile().role
         && canAssignTo(data.assignedTo)
         && data.name is string
         && data.provider is string
@@ -329,10 +376,10 @@ service cloud.firestore {
     // not each spend another document access. The assignee still costs one
     // exists() plus the role get().
     function canManageClientRecordWithProfile(data, profile) {
-      return profile.role == 'admin'
-        || isClientCreator(data)
-        || (profile.role in ['sub_admin', 'social_media']
-          && managesAssignee(data.get('assignedTo', null), profile.role));
+      // Edit/delete only for Admin and the person who gave the client
+      // (creator/assigner). Team managers may not edit or delete a client that
+      // was handed to someone else.
+      return profile.role == 'admin' || isClientCreator(data);
     }
 
     function canUpdateClientStatus(oldData, newData) {
@@ -346,9 +393,21 @@ service cloud.firestore {
       return canAccessClient(oldData)
         && hasPermission('manage_assignments')
         && canAssignTo(newData.assignedTo)
+        // Assignment ownership (§6): the reassignment writer is either the Admin
+        // or the caller who currently holds the client, or a Senior Technical
+        // who personally assigned/created it. A caller whose manage_assignments
+        // permission was removed loses the transfer right here too.
+        && (myProfile().role == 'admin'
+          || oldData.assignedTo == request.auth.uid
+          || (myProfile().role in ['senior_technical', 'social_media']
+            && (oldData.assignedBy == request.auth.uid
+              || oldData.createdBy == request.auth.uid)))
         && newData.diff(oldData).affectedKeys().hasOnly([
-          'assignedTo', 'assignedBy', 'assignedByName', 'assignedAt', 'assignmentHistory'
+          'assignedTo', 'assignedBy', 'assignedByUid', 'assignedByRole',
+          'assignedByName', 'assignedAt', 'assignmentHistory'
         ])
+        && newData.assignedByUid == request.auth.uid
+        && newData.assignedByRole == myProfile().role
         && newData.assignedBy == request.auth.uid
         && newData.assignmentHistory is list;
     }
@@ -359,10 +418,14 @@ service cloud.firestore {
     // resolves that read exactly once and shares it with this helper.
     function canPayClient(oldData, myRole) {
       let assignedTo = oldData.get('assignedTo', null);
+      // Social Media pays only its own clients or ones it personally assigned
+      // (§5 strict scope) — never a teammate's client by rank alone.
       return myRole == 'admin'
         || assignedTo == request.auth.uid
+        || (myRole in ['senior_technical', 'social_media']
+          && oldData.get('assignedBy', null) == request.auth.uid)
         || (assignedTo is string
-          && roleRank(myRole) >= 0
+          && myRole == 'sub_admin'
           && roleRank(get(/databases/$(database)/documents/users/$(assignedTo)).data.role) > roleRank(myRole));
     }
 
@@ -464,7 +527,8 @@ service cloud.firestore {
             'uid', 'name', 'email', 'phone', 'role'
           ]));
       allow list: if canListTeam(uid, resource.data)
-        || canListEmployees(uid, resource.data);
+        || canListEmployees(uid, resource.data)
+        || canListManagedChain(uid, resource.data);
       allow create: if request.resource.data.uid == uid
         && (isBootstrapAdmin(request.resource.data)
           || canCreateEmployee(request.resource.data));
@@ -521,7 +585,8 @@ service cloud.firestore {
             'email', 'work', 'description', 'document', 'documentName', 'documentType', 'documents',
             'amount', 'totalAmount', 'received',
             'totalReceived', 'remaining', 'usedFor',
-            'payment', 'paymentStatus', 'updatedBy', 'updatedAt'
+            'payment', 'paymentStatus', 'workTime', 'workShift',
+            'updatedBy', 'updatedAt'
           ]))
           && request.resource.data.cell is string
           && request.resource.data.cell.matches('^[0-9]{11}$')

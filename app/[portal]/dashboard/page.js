@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { CrmWorkspace } from "../../page";
 import { subscribeToAuthUser } from "@/app/lib/firebase";
+import { registerSessionReset } from "@/app/lib/session-cache";
 import { getCurrentProfile } from "@/app/lib/crm-data";
 import { normalizeRole, roleLabel, rolePermissions } from "@/app/lib/roles";
 
@@ -19,6 +20,16 @@ const portalRoles = {
 // workspace shell from this in-memory copy while the profile check runs in the
 // background. Keeps repeat visits instant instead of showing a blank screen.
 let lastSession = null;
+
+// Session isolation: lastSession is a module-level cache, so if one user signs
+// out and another signs in on the same tab the new user must never see the
+// previous user's session — not even for the instant before the fresh profile
+// check resolves. The shared auth listener calls resetSessionCache() whenever
+// the signed-in uid changes, which nulls this cache along with the data-layer
+// caches.
+registerSessionReset(() => {
+  lastSession = null;
+});
 
 function sessionFromProfile(uid, profile, role) {
   return {
@@ -103,6 +114,10 @@ export default function DashboardPage() {
     return (
       <main className="access-message">
         <h1>Access denied. You are not authorized to access this page.</h1>
+        {/* §9: a user who typed another role's dashboard URL lands here —
+          auto-return them to their own authorized portal. */}
+        <meta httpEquiv="refresh" content="3;url=/" />
+        <p>You will be returned to your own dashboard in a moment.</p>
       </main>
     );
   }

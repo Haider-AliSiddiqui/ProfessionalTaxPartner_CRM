@@ -410,17 +410,39 @@ async function getDirectoryProfiles(profile) {
 }
 
 async function getAssignableProfiles(profile) {
-  // Both roles that outrank the staff beneath them read it by filtered query
-  // (see getManagedProfiles), which is also the only /users read a Social Media
-  // or Sub Admin account is permitted to make.
-  if (profile.role === "sub_admin" || profile.role === "social_media") {
-    return getTeamProfiles(profile);
+  // The assignment-target list is scoped by the assignment permission — the
+  // same one that gates Add client — not by the staffing permission. A caller
+  // the Admin gave "manage assignments" but no staffing right must still see
+  // the employees it may hand work to, otherwise its Add-client dropdown
+  // collapses to "Myself" alone. A JN Technical staffs nobody, so its list is
+  // empty by definition.
+  if (profile.role === "jn_technical" || !hasPermission(profile, "manage_assignments")) {
+    return [];
   }
-  return getManagedProfiles(profile);
+  // Every assigner reads its targets by the same filtered team query (role in
+  // reportableRoles, status == active): it works under both the shipped rules
+  // and the new ones, unlike the managerUid/createdBy chain walk, which the
+  // shipped rules deny — a denial here is exactly what left only "Myself" in
+  // the Add-client dropdown. Active-only is correct for assignment targets,
+  // and the dropdown filters on Active a second time anyway.
+  return getTeamProfiles(profile);
 }
 
 async function getClientRecords(profile, teamProfiles) {
-  const visibleUids = [...new Set([profile.uid, ...teamProfiles.map((employee) => employee.uid)])];
+  // Strict employee-level isolation (§3/§5): a Senior Technical or Social Media
+  // caller sees only clients assigned to their own UID plus clients they
+  // personally handed out (assignedBy == self) — never the rest of their
+  // team's clients. The team UID set is therefore excluded from the query for
+  // those two roles; the team map is still passed in so "Assigned by" renders
+  // the right names.
+  const isStrictOwnerScope =
+    profile.role === "senior_technical" || profile.role === "social_media";
+  const visibleUids = [
+    ...new Set([
+      profile.uid,
+      ...(isStrictOwnerScope ? [] : teamProfiles.map((employee) => employee.uid)),
+    ]),
+  ];
   // Chunked "in" queries instead of one query per teammate: 40 employees used to
   // mean 40 separate round-trips competing for the same socket, which is what
   // made the dashboard feel stalled. Firestore allows 30 values per "in" query.
@@ -432,19 +454,41 @@ async function getClientRecords(profile, teamProfiles) {
   const snapshots =
     profile.role === "admin"
       ? [await getDocs(collection(db, "clients"))]
-      : await Promise.all(
-          chunks.map((chunk) =>
+      : await Promise.all([
+          ...chunks.map((chunk) =>
             getDocs(
               query(collection(db, "clients"), where("assignedTo", "in", chunk)),
             ),
           ),
-        );
+          // The "personally assigned" half of the strict scope: every client
+          // this caller handed out, whoever currently holds it. The read rule
+          // allows assignedBy == caller for exactly these roles.
+          ...(isStrictOwnerScope
+            ? [
+                getDocs(
+                  query(
+                    collection(db, "clients"),
+                    where("assignedBy", "==", profile.uid),
+                  ),
+                ),
+              ]
+            : []),
+        ]);
   const names = new Map(
     teamProfiles.map((employee) => [employee.uid, employee.name]),
   );
   names.set(profile.uid, profile.name);
-  return snapshots
-    .flatMap((snapshot) => snapshot.docs)
+  return [
+    ...snapshots
+      .flatMap((snapshot) => snapshot.docs)
+      // The same record can arrive from both the assignedTo and assignedBy
+      // queries (assigned by the caller to a teammate); keep the first copy.
+      .reduce((unique, record) => {
+        if (!unique.has(record.id)) unique.set(record.id, record);
+        return unique;
+      }, new Map())
+      .values(),
+  ]
     .filter((record) => !record.data().archivedAt)
     .map((record) => {
       const data = record.data();
@@ -535,7 +579,14 @@ async function getServices(profile, teamProfiles, clients) {
     const snapshot = await getDocs(collection(db, "services"));
     if (snapshot.size) return snapshot.docs.map(recordFromSnapshot);
   } else {
-    const visibleUids = chunkValues([profile.uid, ...teamProfiles.map(({ uid }) => uid)], 30);
+    // Strict owner scope: Senior Technical / Social Media query only their own
+    // UID — teammate-created or teammate-held services stay invisible.
+    const isStrictOwnerScope =
+      profile.role === "senior_technical" || profile.role === "social_media";
+    const scopeUids = isStrictOwnerScope
+      ? [profile.uid]
+      : [profile.uid, ...teamProfiles.map(({ uid }) => uid)];
+    const visibleUids = chunkValues(scopeUids, 30);
     const clientIds = chunkValues(clients.map(({ id }) => id), 30);
     // Each "in" value counts as its own disjunction, and Firestore caps a
     // composite OR at 30. Combining createdBy/assignedTo/clientId into one
@@ -920,23 +971,12 @@ async function findClientByIdentity(transaction, identity) {
   );
 }
 
-// Mirrors canManageClientRecord in firestore.rules: Admin owns every client, a
-// creator/assigner owns their own, and a Sub Admin / Social Media owns the
-// clients assigned to the team beneath them. Kept in step with the rules so a
-// save the UI offers is never rejected at the database layer.
+// Mirrors canManageClientRecord in firestore.rules: edit/delete only for the
+// Admin and the person who gave the client (creator/assigner). Kept in step
+// with the rules so a save the UI offers is never rejected at the database layer.
 async function canManageClientRecord(caller, client) {
   if (caller.role === "admin") return true;
-  if ((client.assignedBy || client.createdBy) === caller.uid) return true;
-  if (
-    caller.role !== "sub_admin" &&
-    caller.role !== "social_media"
-  ) {
-    return false;
-  }
-  const assignedTo = client.assignedTo;
-  if (!assignedTo || typeof assignedTo !== "string") return false;
-  const managed = await getManagedProfiles(caller);
-  return managed.some((employee) => employee.uid === assignedTo);
+  return (client.assignedBy || client.createdBy) === caller.uid;
 }
 
 async function createClient(caller, input) {
@@ -1059,6 +1099,8 @@ async function createClient(caller, input) {
     assignedTo,
     owner: target.name,
     assignedBy: caller.uid,
+    assignedByUid: caller.uid,
+    assignedByRole: caller.role,
     assignedByName: caller.name || "",
     assignedAt: serverTimestamp(),
     assignmentHistory: [
@@ -1286,19 +1328,24 @@ async function updateClient(caller, input) {
     );
     const mayTransferRest =
       caller.role === "admin" ||
-      // Keeping a client for yourself: the caller is an active profile of a
-      // role they outrank by definition, so self-assignment never widens the
-      // set of accounts a transfer may reach.
-      assignedTo === caller.uid ||
-      (current.assignedTo === caller.uid &&
-        isRoleBelow(caller.role, caller.role)) ||
-      (previous && isRoleBelow(caller.role, previous.role));
+      // Handing a client the caller currently owns to someone beneath them:
+      // the caller is an active profile of a role they outrank by definition,
+      // so self-assignment never widens the set of accounts a transfer reaches.
+      current.assignedTo === caller.uid ||
+      (caller.role === "senior_technical"
+        // Assignment ownership (see §6): a Senior Technical may only move a
+        // client it personally assigned or created — never one another Senior
+        // handed to its own JN employees.
+        ? current.assignedBy === caller.uid || current.createdBy === caller.uid
+        : previous && isRoleBelow(caller.role, previous.role));
     if (!mayTransferRest) {
       throw new Error("You are not authorized to transfer this client.");
     }
     transaction.update(clientRef, {
       assignedTo,
       assignedBy: caller.uid,
+      assignedByUid: caller.uid,
+      assignedByRole: caller.role,
       assignedByName: caller.name || "",
       assignedAt: serverTimestamp(),
       assignmentHistory: [
