@@ -444,11 +444,11 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     "Excel records": { title: "Excel records", subtitle: "Completed records available within your permission scope.", action: "Download Excel" },
   };
   const meta = sectionMeta[section] || sectionMeta.Clients;
-  // Edit/delete only for the person who gave the client (creator/assigner) and
-  // the Admin. Team members and lower roles never see these buttons.
+  // Edit/delete only for the person who gave the client (its assigner/creator)
+  // and the Admin. The current holder and every other role never see these
+  // buttons — matching canManageClientRecord in firestore.rules.
   const canManageClient = (client) =>
-    isAdmin ||
-    (client.assignedBy || client.createdBy) === currentUid;
+    isAdmin || (client.assignedBy || client.createdBy) === currentUid;
   const [permissionEmployeeUid, setPermissionEmployeeUid] = useState("");
   const [permissionDrafts, setPermissionDrafts] = useState([]);
   // Tables paint this many rows at a time. A 14-column table with thousands of
@@ -466,13 +466,23 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
     () => clients.filter((client) => (section !== "Reports" || isAdmin || client.assignedTo === currentUid) && `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
     [clients, normalizedQuery, section, isAdmin, currentUid],
   );
-  const filteredClients = useMemo(() => (
-    section === "Excel records"
-      ? matchingClients.filter((client) => client.status === "Completed")
+  const filteredClients = useMemo(() => {
+    // The Clients section lists only the clients the caller currently holds
+    // (assignedTo === self): clients they created and handed to someone else
+    // stay visible on Overview, but never re-appear in the Clients workspace.
+    // Admin and Sub Admin keep their full team scope — Sub Admin manages the
+    // whole team's clients under its Admin-granted permissions.
+    const clientsSectionScope =
+      section === "Clients" && !isAdmin && role !== "Sub Admin";
+    const scoped = clientsSectionScope
+      ? matchingClients.filter((client) => client.assignedTo === currentUid)
+      : matchingClients;
+    return section === "Excel records"
+      ? scoped.filter((client) => client.status === "Completed")
       : section === "Clients"
-        ? matchingClients.filter((client) => client.status !== "Completed")
-        : matchingClients
-  ), [matchingClients, section]);
+        ? scoped.filter((client) => client.status !== "Completed")
+        : scoped;
+  }, [matchingClients, section, isAdmin, role, currentUid]);
   // Memoized so typing in the search box only re-filters, instead of also
   // rebuilding every row of every table on each keystroke.
   const filteredEmployees = useMemo(
