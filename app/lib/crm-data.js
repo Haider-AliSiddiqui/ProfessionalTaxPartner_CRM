@@ -1264,12 +1264,19 @@ async function updateClient(caller, input) {
         provider,
         cell,
         cnic,
-        pin: String(input.pin || "").trim(),
-        password: String(input.password || ""),
+        // Only overwrite the secret/document fields when the edit form actually
+        // sent them: the edit modal has no document picker (and may leave PIN /
+        // password empty on purpose), so blanking them on every save used to
+        // wipe an existing uploaded document and stored credentials.
+        pin: input.pin !== undefined ? String(input.pin || "").trim() : current.pin || "",
+        password: input.password !== undefined ? String(input.password || "") : current.password || "",
         email,
         work: String(input.work || "").trim(),
         description: String(input.description || "").trim(),
-        document: String(input.document || "").trim(),
+        document: input.document !== undefined ? String(input.document || "").trim() : current.document || "",
+        documentName: current.documentName || "",
+        documentType: current.documentType || "",
+        ...(Array.isArray(current.documents) && current.documents.length ? { documents: current.documents } : {}),
         // Optional on the client form: an empty value is ignored so an existing
         // payment purpose is never wiped just by saving the client.
         ...(String(input.usedFor || "").trim()
@@ -1436,11 +1443,135 @@ async function createPayment(caller, input) {
   return { payment: { id: paymentRef.id, ...payment, createdAt: null } };
 }
 
+// Only the person who recorded a payment (or the Admin) may edit or delete it.
+// The edit adjusts the client's totals in the same transaction so the
+// remaining balance is never wrong, and the payment's identity (clientId,
+// recordedBy) is never touched.
+function canManagePaymentRecord(caller, payment) {
+  return caller.role === "admin" || payment.recordedBy === caller.uid;
+}
+
+async function updatePayment(caller, input) {
+  const paymentId = String(input.paymentId || "");
+  const amount = Number(input.amount);
+  const date = String(input.date || "").trim();
+  const usedFor = String(input.usedFor || "").trim();
+  if (!paymentId) throw new Error("Payment ID is required.");
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("A payment amount greater than zero is required.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("Payment date must use YYYY-MM-DD format.");
+  }
+  if (!usedFor) throw new Error("Payment used for is required.");
+  const paymentRef = doc(db, "payments", paymentId);
+  let payment;
+  await runTransaction(db, async (transaction) => {
+    const paymentSnapshot = await transaction.get(paymentRef);
+    if (!paymentSnapshot.exists()) throw new Error("Payment not found.");
+    const existing = paymentSnapshot.data();
+    if (!canManagePaymentRecord(caller, existing)) {
+      throw new Error("You are not authorized to edit this payment; only its recorder or a manager can edit it.");
+    }
+    const clientRef = doc(db, "clients", existing.clientId);
+    const clientSnapshot = await transaction.get(clientRef);
+    if (!clientSnapshot.exists() || clientSnapshot.data().archivedAt) {
+      throw new Error("Client not found.");
+    }
+    const client = clientSnapshot.data();
+    const previousAmount = Number(existing.amount) || 0;
+    const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
+    const previousReceived = Number(client.totalReceived ?? client.received) || 0;
+    const totalReceived = previousReceived - previousAmount + amount;
+    if (totalReceived > totalAmount) {
+      throw new Error("The payment exceeds the client's remaining balance.");
+    }
+    const remaining = totalAmount - totalReceived;
+    const paymentStatus = remaining === 0 ? "Received" : "Pending";
+    const nextClientStatus =
+      remaining === 0
+        ? "Completed"
+        : ["New", "Pending", "In Progress"].includes(client.status)
+          ? "In Progress"
+          : client.status || "Pending";
+    payment = {
+      id: paymentId,
+      clientId: existing.clientId,
+      clientName: existing.clientName || "",
+      amount,
+      date,
+      usedFor,
+      recordedBy: existing.recordedBy,
+      recordedByName: existing.recordedByName || "Unknown user",
+      previousAmount,
+    };
+    transaction.update(paymentRef, { amount, date, usedFor, updatedAt: serverTimestamp() });
+    transaction.update(clientRef, {
+      amount: totalAmount,
+      totalAmount,
+      received: totalReceived,
+      totalReceived,
+      remaining,
+      status: nextClientStatus,
+      payment: paymentStatus,
+      paymentStatus,
+      paymentDate: date,
+      usedFor,
+      lastPaymentId: paymentId,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  return { payment };
+}
+
+async function deletePayment(caller, input) {
+  const paymentId = String(input.paymentId || "");
+  if (!paymentId) throw new Error("Payment ID is required.");
+  const paymentRef = doc(db, "payments", paymentId);
+  let payment;
+  await runTransaction(db, async (transaction) => {
+    const paymentSnapshot = await transaction.get(paymentRef);
+    if (!paymentSnapshot.exists()) throw new Error("Payment not found.");
+    const existing = paymentSnapshot.data();
+    if (!canManagePaymentRecord(caller, existing)) {
+      throw new Error("You are not authorized to delete this payment; only its recorder or a manager can delete it.");
+    }
+    payment = {
+      id: paymentId,
+      clientId: existing.clientId,
+      amount: Number(existing.amount) || 0,
+      date: existing.date || "",
+    };
+    const clientRef = doc(db, "clients", existing.clientId);
+    const clientSnapshot = await transaction.get(clientRef);
+    if (clientSnapshot.exists()) {
+      const client = clientSnapshot.data();
+      const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
+      const totalReceived = Math.max((Number(client.totalReceived ?? client.received) || 0) - payment.amount, 0);
+      const remaining = Math.max(totalAmount - totalReceived, 0);
+      const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Pending";
+      transaction.update(clientRef, {
+        amount: totalAmount,
+        totalAmount,
+        received: totalReceived,
+        totalReceived,
+        remaining,
+        payment: paymentStatus,
+        paymentStatus,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    transaction.delete(paymentRef);
+  });
+  return { payment };
+}
+
 async function dispatch(profile, path, method, input) {
   const needsRecords =
     method === "GET" ||
     (method === "POST" && (path === "services" || path === "payments")) ||
-    (method === "PATCH" && path === "clients");
+    (method === "PATCH" && path === "clients") ||
+    (method === "PATCH" && path === "payments");
   const records = needsRecords ? await loadRecords(profile) : null;
 
   if (method === "GET" && path === "employees") {
@@ -1501,6 +1632,72 @@ async function dispatch(profile, path, method, input) {
       };
     });
     return updated;
+  }
+  if (method === "PATCH" && path === "payments") {
+    const updated = await updatePayment(profile, input);
+    if (updated?.payment) {
+      const payment = updated.payment;
+      patchCachedRecords(profile, ({ clients, payments }) => ({
+        payments: payments.map((record) => (record.id === payment.id ? { ...record, ...payment } : record)),
+        clients: clients.map((client) => {
+          if (client.id !== payment.clientId) return client;
+          const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
+          const totalReceived = Math.max(
+            totalAmount - (Number(client.remaining) || 0) + (Number(payment.amount) || 0) - (Number(payment.previousAmount) || 0),
+            0,
+          );
+          const remaining = Math.max(totalAmount - totalReceived, 0);
+          const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Pending";
+          const nextStatus = remaining === 0
+            ? "Completed"
+            : ["New", "Pending", "In Progress"].includes(client.status)
+              ? "In Progress"
+              : client.status || "Pending";
+          return {
+            ...client,
+            amount: totalAmount,
+            totalAmount,
+            received: totalReceived,
+            totalReceived,
+            remaining,
+            payment: paymentStatus,
+            paymentStatus,
+            paymentDate: payment.date,
+            ...(payment.usedFor ? { usedFor: payment.usedFor } : {}),
+            status: nextStatus,
+          };
+        }),
+      }));
+    }
+    return updated;
+  }
+  if (method === "DELETE" && path === "payments") {
+    const deleted = await deletePayment(profile, input);
+    if (deleted?.payment) {
+      const payment = deleted.payment;
+      patchCachedRecords(profile, ({ clients, payments }) => ({
+        payments: payments.filter((record) => record.id !== payment.id),
+        clients: clients.map((client) => {
+          if (client.id !== payment.clientId) return client;
+          const totalAmount = Number(client.totalAmount ?? client.amount) || 0;
+          const totalReceived = Math.max((Number(client.totalReceived ?? client.received) || 0) - (Number(payment.amount) || 0), 0);
+          const remaining = Math.max(totalAmount - totalReceived, 0);
+          const paymentStatus = remaining === 0 && totalAmount > 0 ? "Received" : "Pending";
+          return {
+            ...client,
+            amount: totalAmount,
+            totalAmount,
+            received: totalReceived,
+            totalReceived,
+            remaining,
+            payment: paymentStatus,
+            paymentStatus,
+            status: remaining === 0 ? "Completed" : ["New", "Pending", "In Progress"].includes(client.status) ? "In Progress" : client.status || "Pending",
+          };
+        }),
+      }));
+    }
+    return deleted;
   }
   if (method === "POST" && path === "payments") {
     const created = await createPayment(profile, input);

@@ -255,8 +255,8 @@ function buildWorkReport(clients, employees) {
   // Employees with no clients in scope still deserve a bar at zero, so their
   // report never silently disappears. The directory name wins over the record's
   // denormalised owner name, which can be stale after a rename.
-  const nameByUid = new Map((employees || []).map((employee) => [employee.uid, employee.name]));
-  const rows = [...byAssignee.values()].map((row) => ({ ...row, name: nameByUid.get(row.key) || row.name }));
+  const nameByUid = new Map((employees || []).filter((employee) => employee?.uid).map((employee) => [employee.uid, employee.name || employee.roleLabel || "Employee"]));
+  const rows = [...byAssignee.values()].map((row) => ({ ...row, name: nameByUid.get(row.key) || row.name || "Unassigned" }));
   const seen = new Set(rows.map((row) => row.key));
   (employees || []).forEach((employee) => {
     if (seen.has(employee.uid)) return;
@@ -290,7 +290,7 @@ function WorkReportChart({ clients, employees, role, previewName }) {
     <div className="employee-chart-grid">
       {rows.map((row) => <article className="employee-chart-card" key={row.key}>
         <header className="employee-chart-header">
-          <div className="work-report-person"><div className="owner-avatar">{row.name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase()}</div><div><strong>{row.name}</strong><span>Individual performance · All records</span></div></div>
+          <div className="work-report-person"><div className="owner-avatar">{String(row.name || "?").split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase()}</div><div><strong>{row.name || "Unassigned"}</strong><span>Individual performance · All records</span></div></div>
           <span className="completion-chip">{completion(row)}% completed</span>
         </header>
         <div className="employee-chart-body">
@@ -434,7 +434,7 @@ async function loadTeamList(user, requestApi, recordCacheRef, setEmployeeRecords
   setAssignableEmployeeRecords((result.assignableEmployees || result.employees).map(formatEmployee));
 }
 
-function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onViewClient, onEditClient, onDeleteClient, onEditEmployee, onDeleteEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, assignableRoleOptions, readOnlyPreview, isAdmin }) {
+function WorkspaceView({ section, role, clients, employeeRecords, assignableEmployees = employeeRecords, serviceRecords, paymentRecords, query, setQuery, onAction, onClientStatusChange, onClientTransfer, onViewClient, onEditClient, onDeleteClient, onEditEmployee, onDeleteEmployee, onResetEmployeePassword, onEmployeePermissionsChange, currentUid, canManageEmployees, canManagePermissions, canManageServices, canAddClient, employeeRoleOptions, assignableRoleOptions, readOnlyPreview, isAdmin, onEditPayment, onDeletePayment }) {
   const sectionMeta = {
     Clients: { title: "Clients", subtitle: "Only clients available to your current role are shown.", action: "Add client" },
     Employees: { title: "Employees", subtitle: "Manage team access and assigned workload.", action: "Add employee" },
@@ -449,6 +449,10 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
   // buttons — matching canManageClientRecord in firestore.rules.
   const canManageClient = (client) =>
     isAdmin || (client.assignedBy || client.createdBy) === currentUid;
+  // Edit/delete for payments: only the person who recorded the payment (or the
+  // Admin) sees the buttons — matching canManagePaymentRecord in firestore.rules.
+  const canManagePayment = (payment) =>
+    isAdmin || payment.recordedBy === currentUid;
   const [permissionEmployeeUid, setPermissionEmployeeUid] = useState("");
   const [permissionDrafts, setPermissionDrafts] = useState([]);
   // Tables paint this many rows at a time. A 14-column table with thousands of
@@ -463,8 +467,13 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
   const normalizedQuery = query.toLowerCase();
   const scopedEmployees = employeeRecords;
   const matchingClients = useMemo(
-    () => clients.filter((client) => (section !== "Reports" || isAdmin || client.assignedTo === currentUid) && `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
-    [clients, normalizedQuery, section, isAdmin, currentUid],
+    // Reports used to drop every client not personally held by the caller
+    // (assignedTo === self), which left the chart with zero records even for a
+    // manager whose whole team is loaded — every bar then read 0. The chart is
+    // a per-employee breakdown of the caller's own authorized scope, so it gets
+    // the same client set as every other section; only the search text filters.
+    () => clients.filter((client) => `${client.name} ${client.provider} ${client.owner}`.toLowerCase().includes(normalizedQuery)),
+    [clients, normalizedQuery],
   );
   const filteredClients = useMemo(() => {
     // The Clients section lists only the clients the caller currently holds
@@ -520,6 +529,18 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
   }, [clients]);
   const showAction = !readOnlyPreview && ((section === "Employees" && canManageEmployees) || (section === "Clients" && canAddClient) || (section === "Services" && canManageServices) || (section === "Payments" && clients.length > 0));
 
+  // Clients section uses page-number pagination (like the Overview table): 50
+  // records per page with ‹ / page numbers / › controls, instead of the old
+  // cumulative "Show more" window. Excel records keep the same page state.
+  const [clientPage, setClientPage] = useState(1);
+  const clientPageCount = Math.max(1, Math.ceil(filteredClients.length / TABLE_PAGE_SIZE));
+  const currentClientPage = Math.min(clientPage, clientPageCount);
+  const pagedClientRows = useMemo(() => filteredClients.slice(
+    (currentClientPage - 1) * TABLE_PAGE_SIZE,
+    currentClientPage * TABLE_PAGE_SIZE,
+  ), [filteredClients, currentClientPage]);
+  const setClientPageSafe = (page) => setClientPage(Math.min(Math.max(1, page), clientPageCount));
+
   const tableRows = filteredClients.slice(0, visibleRowCount);
   const hasMoreRows = filteredClients.length > tableRows.length;
   const moreRows = hasMoreRows
@@ -538,12 +559,13 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
         <div className="permission-checkboxes">{["manage_employees", "manage_permissions", "manage_lower_employees", "manage_junior_employees", "manage_clients", "manage_assignments"].map((permission) => <label key={permission}><input type="checkbox" checked={permissionDrafts.includes(permission)} onChange={(event) => setPermissionDrafts((current) => event.target.checked ? [...new Set([...current, permission])] : current.filter((item) => item !== permission))} />{permission.replaceAll("_", " ")}</label>)}</div>
         <div className="modal-actions"><button className="primary-button" disabled={!permissionEmployeeUid}>Save permissions</button></div>
       </form>}
-      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{tableRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && canManageClient(client)} onViewClient={onViewClient} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
+      {section === "Clients" && <div className="table-scroll"><table className="client-record-table"><thead><tr><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Documents</th><th>Pending</th><th>Received</th><th>Actions</th></tr></thead><tbody>{pagedClientRows.map((client) => <tr key={client.id}><td className="date-cell"><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td title={client.description || ""}>{client.description || "-"}</td><td><DocumentLink client={client} /></td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td><ClientRowActions client={client} canManage={!readOnlyPreview && canManageClient(client)} onViewClient={onViewClient} onEditClient={onEditClient} onDeleteClient={onDeleteClient} /></td></tr>)}</tbody></table>{filteredClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div>}
+      {section === "Clients" && <div className="table-footer"><span>Showing <strong>{pagedClientRows.length}</strong> of <strong>{filteredClients.length}</strong> client records</span><div className="pagination"><button disabled={currentClientPage <= 1} onClick={() => setClientPageSafe(currentClientPage - 1)}>‹</button>{Array.from({ length: clientPageCount }, (_, index) => index + 1).map((page) => <button key={page} className={page === currentClientPage ? "current" : ""} onClick={() => setClientPageSafe(page)}>{page}</button>)}<button disabled={currentClientPage >= clientPageCount} onClick={() => setClientPageSafe(currentClientPage + 1)}>›</button></div></div>}
       {section === "Services" && <div className="table-scroll"><table><thead><tr><th>Service</th><th>Category</th><th>Active clients</th><th>Collected</th><th>Status</th><th /></tr></thead><tbody>{filteredServices.map((service) => <tr key={service.id || service.name}><td><div className="service-cell"><div className="service-icon"><Icon name="layers" size={15} /></div><strong>{service.name}</strong></div></td><td>{service.category}</td><td>{service.clients}</td><td className="money-cell">{typeof service.amount === "number" ? formatMoney(service.amount) : service.amount}</td><td><span className="status-badge completed"><i />{service.status}</span></td><td><button className="row-more">•••</button></td></tr>)}</tbody></table></div>}
       {section === "Excel records" && <div className="table-scroll"><table className="excel-record-table"><thead><tr><th>S.NO</th><th>Date</th><th>Client Name</th><th>Client Provider</th><th>Cell</th><th>CNIC</th><th>PIN</th><th>Password</th><th>Email</th><th>Work</th><th>Description</th><th>Total Amount</th><th>Received Amount</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{tableRows.map((client, index) => <tr key={client.id}><td>{index + 1}</td><td><DateCell date={client.date || "29 Sep 2026"} client={client} /></td><td><strong>{client.name}</strong><span className="record-id">{client.id}</span></td><td>{client.provider}</td><td>{client.cell || "-"}</td><td>{client.cnic || "-"}</td><td>{client.pin || "-"}</td><td>{client.password || "-"}</td><td>{client.email || "-"}</td><td>{client.work || client.provider}</td><td>{client.description || "-"}</td><td>{formatMoney(client.amount)}</td><td className={receivedTone(client.received)}>{formatMoney(client.received)}</td><td className={pendingTone(Math.max(client.amount - client.received, 0))}>{formatMoney(Math.max(client.amount - client.received, 0))}</td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span></td></tr>)}</tbody></table>{moreRows && <div className="table-more">{moreRows}</div>}</div>}
-      {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Payment At:</th><th>Amount received</th><th>Recorded by</th></tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td>{payment.usedFor || "-"}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td></tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
+      {section === "Payments" && <div className="table-scroll"><table><thead><tr><th>Client</th><th>Payment date</th><th>Payment At:</th><th>Amount received</th><th>Recorded by</th>{!readOnlyPreview && <th>Actions</th>}</tr></thead><tbody>{filteredPayments.map((payment) => <tr key={payment.id}><td>{payment.clientName}</td><td>{payment.date}</td><td>{payment.usedFor || "-"}</td><td className="money-cell">{formatMoney(Number(payment.amount) || 0)}</td><td>{payment.recordedByName && payment.recordedByName !== payment.recordedBy ? payment.recordedByName : "Unknown user"}</td>{!readOnlyPreview && <td>{canManagePayment(payment) && <div className="client-row-actions"><button type="button" className="text-button" onClick={() => onEditPayment(payment)}>Edit</button><button type="button" className="client-delete-button" onClick={() => onDeletePayment(payment)}>Delete</button></div>}</td>}</tr>)}</tbody></table>{filteredPayments.length === 0 && <div className="empty-state">No authorized payment records yet.</div>}</div>}
       {section === "Reports" && <div className="work-report-panel">
-        <WorkReportChart clients={filteredClients} employees={isAdmin ? scopedEmployees : [{ uid: currentUid, name: clients.find((client) => client.assignedTo === currentUid)?.owner || "My performance" }]} role={role} previewName={readOnlyPreview ? role.replace(/^Preview:\s*/, "") : ""} />
+        <WorkReportChart clients={filteredClients} employees={isAdmin ? scopedEmployees : (scopedEmployees.length ? scopedEmployees : [{ uid: currentUid, name: clients.find((client) => client.assignedTo === currentUid)?.owner || "My performance" }])} role={role} previewName={readOnlyPreview ? role.replace(/^Preview:\s*/, "") : ""} />
         <div className="work-report-footer"><span>{filteredClients.length} clients · {filteredPayments.length} payments · {formatMoney(filteredPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0))} received</span><button className="text-button" onClick={() => downloadExcelRecords(filteredClients)}><Icon name="file" size={15} /> Export report</button></div>
       </div>}
       {((section === "Employees" && filteredEmployees.length === 0) || (section === "Clients" && filteredClients.length === 0) || (section === "Services" && filteredServices.length === 0)) && <div className="empty-state">No authorized {section.toLowerCase()} match this search.</div>}
@@ -578,6 +600,7 @@ export function CrmWorkspace({ initialSession }) {
   const [clientToDelete, setClientToDelete] = useState(null);
   const [clientToView, setClientToView] = useState(null);
   const [employeeToDelete, setEmployeeToDelete] = useState(null);
+  const [paymentToDelete, setPaymentToDelete] = useState(null);
   const [savingAction, setSavingAction] = useState(null);
   const submitLock = useRef(false);
   const [clientForm, setClientForm] = useState({ date: new Date().toISOString().slice(0, 10), workTime: new Date().toTimeString().slice(0, 5), name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", assignedTo: "", assignedShift: "", amount: "", received: "", usedFor: "" });
@@ -585,6 +608,7 @@ export function CrmWorkspace({ initialSession }) {
   const [isSavingDocuments, setIsSavingDocuments] = useState(false);
   const [clientEditForm, setClientEditForm] = useState({ id: "", date: "", workTime: "", name: "", provider: "", cell: "", cnic: "", pin: "", password: "", email: "", work: "", description: "", totalAmount: "", totalReceived: "", usedFor: "" });
   const [paymentForm, setPaymentForm] = useState({ clientId: "", amount: "", date: new Date().toISOString().slice(0, 10), usedFor: "" });
+  const [paymentEditForm, setPaymentEditForm] = useState({ id: "", clientId: "", amount: "", date: "", usedFor: "" });
   const [serviceForm, setServiceForm] = useState({ name: "", category: "" });
   const [employeeEditForm, setEmployeeEditForm] = useState({ uid: "", name: "", email: "", phone: "", role: "" });
   const [newEmployeeRole, setNewEmployeeRole] = useState("");
@@ -1002,7 +1026,10 @@ export function CrmWorkspace({ initialSession }) {
         };
       }));
       setActiveNav("Clients");
-      loadSection(firebaseUser, "Clients").catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
+      // force: the record cache is seconds old after a save, so a non-forced
+      // refresh would skip the re-read and the row could keep showing the old
+      // total amount until the cache expired.
+      loadSection(firebaseUser, "Clients", { force: true }).catch((error) => setDataError(`Client saved, but records could not refresh: ${error.message}`));
     } catch (error) {
       setDataError(`Could not update client: ${error.message}`);
     } finally {
@@ -1045,6 +1072,57 @@ export function CrmWorkspace({ initialSession }) {
   const openClientDelete = (client) => {
     setClientToDelete(client);
     setModal("delete-client");
+  };
+  const openPaymentEdit = (payment) => {
+    setPaymentEditForm({
+      id: payment.id,
+      clientId: payment.clientId,
+      amount: String(payment.amount || ""),
+      date: payment.date || "",
+      usedFor: payment.usedFor || "",
+    });
+    setModal("edit-payment");
+  };
+  const openPaymentDelete = (payment) => {
+    setPaymentToDelete(payment);
+    setModal("delete-payment");
+  };
+  const submitPaymentEdit = async (event) => {
+    event.preventDefault();
+    if (submitLock.current) return;
+    submitLock.current = true;
+    setSavingAction("edit-payment");
+    setDataError("");
+    try {
+      await requestApi("payments", "PATCH", { ...paymentEditForm, paymentId: paymentEditForm.id });
+      const amount = Number(paymentEditForm.amount) || 0;
+      setPaymentRecords((current) => current.map((record) => (record.id === paymentEditForm.id ? { ...record, amount, date: paymentEditForm.date, usedFor: paymentEditForm.usedFor } : record)));
+      setModal(null);
+      loadSection(firebaseUser, "Payments", { force: true }).catch((error) => setDataError(`Payment saved, but records could not refresh: ${error.message}`));
+    } catch (error) {
+      setDataError(`Could not edit payment: ${error.message}`);
+    } finally {
+      submitLock.current = false;
+      setSavingAction(null);
+    }
+  };
+  const deletePaymentRecord = async () => {
+    if (!paymentToDelete || submitLock.current) return;
+    submitLock.current = true;
+    setSavingAction("delete-payment");
+    setDataError("");
+    try {
+      await requestApi("payments", "DELETE", { paymentId: paymentToDelete.id });
+      setPaymentRecords((current) => current.filter((record) => record.id !== paymentToDelete.id));
+      setModal(null);
+      setPaymentToDelete(null);
+      loadSection(firebaseUser, "Payments", { force: true }).catch((error) => setDataError(`Payment deleted, but records could not refresh: ${error.message}`));
+    } catch (error) {
+      setDataError(`Could not delete payment: ${error.message}`);
+    } finally {
+      submitLock.current = false;
+      setSavingAction(null);
+    }
   };
   const openClientView = (client) => {
     setClientToView(client);
@@ -1271,13 +1349,13 @@ export function CrmWorkspace({ initialSession }) {
 
           {activeNav === "Overview" ? <>
           <section className="panel clients-panel"><div className="panel-heading clients-heading"><div><h2>Recent clients</h2><p>Stay on top of your latest client activity</p></div><button className="text-button" onClick={() => setActiveNav("Clients")}>View all clients <Icon name="arrow" size={15} /></button></div><div className="table-toolbar"><div className="search-box"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients..." /></div><div className="filter-tabs">{["All clients", "In Progress", "Pending", "Completed"].map((item) => <button key={item} className={filter === item ? "selected" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><button className="filter-button">Filter <span>⌄</span></button></div><div className="table-scroll"><table><thead><tr><th>Client</th><th>Service</th><th>Assigned to</th><th>Assigned by</th><th>Work status</th><th>Payment</th><th>Last updated</th><th>Actions</th></tr></thead><tbody>{pagedOverviewClients.map((client) => <tr key={client.id}><td><div className="client-cell"><div className={`client-avatar ${client.color}`}>{client.initials}</div><div><strong>{client.name}</strong><span>{client.id}</span></div></div></td><td>{client.provider}</td><td><div className="owner-cell"><div className="owner-avatar">{client.owner.split(" ").map((word) => word[0]).join("")}</div>{client.owner}</div></td><td>{client.assignedByName || "-"}</td><td><span className={`status-badge ${client.status.toLowerCase().replace(" ", "-")}`}><i />{client.status}</span></td><td><span className={`payment-badge ${client.payment.toLowerCase()}`}>{client.payment}</span><small className="payment-amount">{formatMoney(client.received)} / {formatMoney(client.amount)}</small></td><td className="date-cell"><DateCell date={client.date} client={client} /></td><td><ClientRowActions client={client} canManage={!isAdminPreview && ((client.assignedBy || client.createdBy) === session.uid || session.role === "admin")} onViewClient={openClientView} onEditClient={openClientEdit} onDeleteClient={openClientDelete} /></td></tr>)}</tbody></table>{visibleClients.length === 0 && <div className="empty-state">No authorized clients match this search.</div>}</div><div className="table-footer"><span>Showing <strong>{pagedOverviewClients.length}</strong> of <strong>{visibleClients.length}</strong> authorized clients</span><div className="pagination"><button disabled={currentOverviewPage <= 1} onClick={() => setOverviewPageSafe(currentOverviewPage - 1)}>‹</button>{Array.from({ length: overviewPageCount }, (_, index) => index + 1).map((page) => <button key={page} className={page === currentOverviewPage ? "current" : ""} onClick={() => setOverviewPageSafe(page)}>{page}</button>)}<button disabled={currentOverviewPage >= overviewPageCount} onClick={() => setOverviewPageSafe(currentOverviewPage + 1)}>›</button></div></div></section>
-          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onViewClient={openClientView} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEditEmployee={openEmployeeEdit} onDeleteEmployee={openEmployeeDelete} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
+          </> : <WorkspaceView section={activeNav} role={isAdminPreview ? `Preview: ${employeeRecords.find((employee) => employee.uid === teamView)?.name || "Employee"}` : role} clients={scope.clients} employeeRecords={scopedEmployees} assignableEmployees={isAdminPreview ? scopedEmployees : assignableEmployeeRecords} serviceRecords={scopedServices} paymentRecords={scopedPayments} query={query} setQuery={setQuery} onAction={openModal} onClientStatusChange={updateClientStatus} onClientTransfer={transferClient} onViewClient={openClientView} onEditClient={openClientEdit} onDeleteClient={openClientDelete} onEditPayment={openPaymentEdit} onDeletePayment={openPaymentDelete} onEditEmployee={openEmployeeEdit} onDeleteEmployee={openEmployeeDelete} onResetEmployeePassword={openEmployeePasswordReset} onEmployeePermissionsChange={updateEmployeePermissions} currentUid={session.uid} isAdmin={session.role === "admin"} canManageEmployees={canManageEmployees && !isAdminPreview} canManagePermissions={session.permissions.includes("manage_permissions") && !isAdminPreview} canManageServices={canManageServices && !isAdminPreview} canAddClient={canAddClient && !isAdminPreview} employeeRoleOptions={employeeRoleOptions} assignableRoleOptions={assignableRoleOptions} readOnlyPreview={isAdminPreview} />}
         </div>
       </section>
       {clientToView && <ClientDetailsModal client={clientToView} onClose={() => setClientToView(null)} />}
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(null); setClientToDelete(null); setEmployeeToDelete(null); } }}>
-        <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === "delete-client" ? "delete-client-description" : modal === "delete-employee" ? "delete-employee-description" : undefined}>
-          <div className="modal-header"><div><p className="eyebrow">{modal === "client" ? "Client assignment" : modal === "delete-client" || modal === "edit-client" ? "Client record" : modal === "payment" ? "Payment entry" : modal === "service" ? "Service management" : "Team access"}</p><h2 id="modal-title">{modal === "client" ? "Add new client" : modal === "delete-client" ? "Delete client permanently?" : modal === "delete-employee" ? "Delete employee permanently?" : modal === "employee" ? "Add new employee" : modal === "edit-client" ? "Edit client" : modal === "edit-employee" ? "Edit employee" : modal === "reset-employee-password" ? "Reset employee password" : modal === "service" ? "Add service" : "Record payment"}</h2></div><button className="modal-close" onClick={() => { setModal(null); setClientToDelete(null); setEmployeeToDelete(null); }} aria-label="Close dialog">&times;</button></div>
+        <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === "delete-client" ? "delete-client-description" : modal === "delete-employee" ? "delete-employee-description" : modal === "delete-payment" ? "delete-payment-description" : undefined}>
+          <div className="modal-header"><div><p className="eyebrow">{modal === "client" ? "Client assignment" : modal === "delete-client" || modal === "edit-client" ? "Client record" : modal === "payment" ? "Payment entry" : modal === "edit-payment" ? "Payment record" : modal === "service" ? "Service management" : "Team access"}</p><h2 id="modal-title">{modal === "client" ? "Add new client" : modal === "delete-client" ? "Delete client permanently?" : modal === "delete-employee" ? "Delete employee permanently?" : modal === "delete-payment" ? "Delete payment permanently?" : modal === "employee" ? "Add new employee" : modal === "edit-client" ? "Edit client" : modal === "edit-employee" ? "Edit employee" : modal === "reset-employee-password" ? "Reset employee password" : modal === "edit-payment" ? "Edit payment" : modal === "service" ? "Add service" : "Record payment"}</h2></div><button className="modal-close" onClick={() => { setModal(null); setClientToDelete(null); setEmployeeToDelete(null); }} aria-label="Close dialog">&times;</button></div>
           {modal === "client" ? <form onSubmit={submitClient}>
             <div className="form-grid client-form-grid">
               <label>Date<input required type="date" value={clientForm.date} onChange={(event) => setClientForm({ ...clientForm, date: event.target.value })} /></label>
@@ -1359,7 +1437,20 @@ export function CrmWorkspace({ initialSession }) {
             </div>
             <p className="form-note">Employee login email is managed by Firebase Authentication and cannot be changed from another account.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button">Save employee</button></div>
-          </form> : modal === "service" ? <form onSubmit={submitService}>
+          </form> : modal === "edit-payment" ? <form onSubmit={submitPaymentEdit}>
+            <div className="form-grid">
+              <label>Amount received<input required type="number" min="0.01" step="0.01" value={paymentEditForm.amount} onChange={(event) => setPaymentEditForm({ ...paymentEditForm, amount: event.target.value })} /></label>
+              <label>Payment date<input required type="date" value={paymentEditForm.date} onChange={(event) => setPaymentEditForm({ ...paymentEditForm, date: event.target.value })} /></label>
+              <label>Payment At:<input required value={paymentEditForm.usedFor} onChange={(event) => setPaymentEditForm({ ...paymentEditForm, usedFor: event.target.value })} /></label>
+            </div>
+            <p className="form-note"><Icon name="shield" size={14} /> The client&apos;s received and remaining amounts update automatically.</p>
+            {dataError && <p className="form-error" role="alert">{dataError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "edit-payment" ? "Saving..." : "Save changes"}</button></div>
+          </form> : modal === "delete-payment" ? <div>
+            <p id="delete-payment-description" className="form-note delete-warning">This will permanently delete this payment of <strong>{formatMoney(Number(paymentToDelete?.amount) || 0)}</strong> for <strong>{paymentToDelete?.clientName}</strong>, and the client&apos;s received amount will be reduced by the same value. This action cannot be undone.</p>
+            {dataError && <p className="form-error" role="alert">{dataError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={savingAction !== null} onClick={() => { setModal(null); setPaymentToDelete(null); }}>Cancel</button><button type="button" className="danger-button" disabled={savingAction !== null} onClick={deletePaymentRecord}>{savingAction === "delete-payment" ? "Deleting..." : "Delete permanently"}</button></div>
+          </div> : modal === "service" ? <form onSubmit={submitService}>
             <div className="form-grid">
               <label>Service name<input required value={serviceForm.name} onChange={(event) => setServiceForm({ ...serviceForm, name: event.target.value })} /></label>
               <label>Category<input required value={serviceForm.category} onChange={(event) => setServiceForm({ ...serviceForm, category: event.target.value })} /></label>

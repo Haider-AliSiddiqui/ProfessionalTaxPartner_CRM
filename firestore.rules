@@ -489,6 +489,16 @@ service cloud.firestore {
         && canPayClient(client, profile.role);
     }
 
+    // A payment may be edited or deleted only by the person who recorded it or
+    // by the Admin — the same ownership the client edit rule enforces. The
+    // editable key set keeps the payment's identity (clientId, recordedBy)
+    // immutable, and the amount can never drop below zero.
+    function canManagePaymentRecord(data) {
+      let profile = myProfile();
+      return profile.status == 'active'
+        && (profile.role == 'admin' || data.recordedBy == request.auth.uid);
+    }
+
     function canDeleteLinkedRecord(clientId) {
       let clientPath = /databases/$(database)/documents/clients/$(clientId);
       return hasActiveRole()
@@ -603,8 +613,23 @@ service cloud.firestore {
             && exists(/databases/$(database)/documents/clients/$(resource.data.clientId))
             && canAccessClient(get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data)));
       allow create: if canCreatePayment(request.resource.data, paymentId);
-      allow update: if false;
-      allow delete: if canDeleteLinkedRecord(resource.data.clientId);
+      allow update: if canManagePaymentRecord(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'amount', 'date', 'usedFor', 'updatedAt'
+        ])
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.date is string
+        && request.resource.data.date.matches('^\d{4}-\d{2}-\d{2}$')
+        && request.resource.data.usedFor is string
+        && request.resource.data.usedFor.size() > 0
+        && request.resource.data.usedFor.size() <= 200
+        && request.resource.data.updatedAt is timestamp;
+      // Deletion stays with the recorder or the Admin; the client-side totals
+      // are adjusted in the same transaction, so no orphan balance is left.
+      allow delete: if hasActiveRole()
+        && (myProfile().role == 'admin' || resource.data.recordedBy == request.auth.uid)
+        && canDeleteLinkedRecord(resource.data.clientId);
     }
 
     match /services/{serviceId} {
