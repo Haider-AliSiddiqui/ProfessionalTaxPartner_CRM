@@ -488,9 +488,12 @@ function WorkspaceView({ section, role, clients, employeeRecords, assignableEmpl
       : matchingClients;
     return section === "Excel records"
       ? scoped.filter((client) => client.status === "Completed")
-      : section === "Clients"
-        ? scoped.filter((client) => client.status !== "Completed")
-        : scoped;
+      : scoped;
+    // The Clients section used to hide Completed clients entirely, which made
+    // a fully-paid client impossible to edit again — e.g. an NTN client paid
+    // 500 of 500, then asked for filing too and the total had to become 2000.
+    // Completed rows now stay listed (badged) so their totals can be edited;
+    // Excel records keeps its own completed-only view for the export.
   }, [matchingClients, section, isAdmin, role, currentUid]);
   // Memoized so typing in the search box only re-filters, instead of also
   // rebuilding every row of every table on each keystroke.

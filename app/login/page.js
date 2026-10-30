@@ -197,15 +197,16 @@ export default function LoginPage() {
       }
 
       const code = requestError?.code || "";
-      const message = requestError?.name === "TimeoutError"
-        ? "Sign-in is taking too long. Check your connection and Firebase deployment settings, then try again."
-        : code === "auth/invalid-credential"
-          ? "Incorrect password."
-          : code === "auth/user-not-found"
-            ? "Incorrect email or password."
-            : code === "auth/user-disabled"
-              ? "Your account has been deactivated. Please contact your administrator."
-              : requestError.message || "Authentication failed.";
+      const message =
+        requestError?.name === "TimeoutError"
+          ? "Sign-in is taking too long. Check your connection and Firebase deployment settings, then try again."
+          : code === "auth/invalid-credential"
+            ? "Incorrect password."
+            : code === "auth/user-not-found"
+              ? "Incorrect email or password."
+              : code === "auth/user-disabled"
+                ? "Your account has been deactivated. Please contact your administrator."
+                : requestError.message || "Authentication failed.";
 
       setError(message);
     } finally {
