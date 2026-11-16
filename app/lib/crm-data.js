@@ -999,10 +999,13 @@ async function createClient(caller, input) {
     assignedTo === caller.uid
       ? caller
       : employees.find((employee) => employee.uid === assignedTo);
+  // Assigning to yourself is always allowed (the target is your own active
+  // profile, which isRoleBelow would reject since nobody is below themselves),
+  // so the rank check only applies to teammates.
   if (
     !target ||
     target.status !== "active" ||
-    !isRoleBelow(caller.role, target.role)
+    (assignedTo !== caller.uid && !isRoleBelow(caller.role, target.role))
   ) {
     throw new Error("You are not authorized to assign clients to this employee.");
   }
@@ -1318,11 +1321,15 @@ async function updateClient(caller, input) {
     throw new Error("Your account does not have permission to transfer clients.");
   }
   const employees = await getAssignableProfiles(caller);
-  const target = employees.find((employee) => employee.uid === assignedTo);
+  const target =
+    assignedTo === caller.uid
+      ? caller
+      : employees.find((employee) => employee.uid === assignedTo);
+  // Same self-assignment exemption as createClient above.
   if (
     !target ||
     target.status !== "active" ||
-    !isRoleBelow(caller.role, target.role)
+    (assignedTo !== caller.uid && !isRoleBelow(caller.role, target.role))
   ) {
     throw new Error("You are not authorized to assign clients to this employee.");
   }
