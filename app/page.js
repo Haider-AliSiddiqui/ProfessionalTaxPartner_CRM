@@ -1205,7 +1205,7 @@ export function CrmWorkspace({ initialSession }) {
       });
       setModal(null);
       setPasswordResetForm({ uid: "", password: "", confirmPassword: "" });
-      setDataError(`New password saved for ${employee.name}.`);
+      setDataError(`Password reset email sent to ${employee.name}. They must open the link in their email inbox to set the new password.`);
     } catch (error) {
       setDataError(`Could not set employee password: ${error.message}`);
     } finally {
@@ -1424,7 +1424,7 @@ export function CrmWorkspace({ initialSession }) {
             <p className="form-note"><Icon name="shield" size={14} /> The employee can sign in through the common login page.</p>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={savingAction !== null}>{savingAction === "employee" ? "Saving..." : "Create employee"}</button></div>
           </form> : modal === "reset-employee-password" ? <form onSubmit={submitEmployeePasswordReset}>
-            <p className="form-note"><Icon name="shield" size={14} /> Set a new login password for this employee. No reset email is sent — the employee signs in with the password you enter here.</p>
+            <p className="form-note"><Icon name="shield" size={14} /> A password reset email is sent to the employee&apos;s login address. They open the link in their inbox and set the new password — no one can set another account&apos;s password directly.</p>
             <div className="form-grid">
               <PasswordField label="New password" name="password" value={passwordResetForm.password} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, password: event.target.value })} placeholder="At least 8 characters" autoComplete="new-password" />
               <PasswordField label="Confirm new password" name="confirmPassword" value={passwordResetForm.confirmPassword} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, confirmPassword: event.target.value })} placeholder="Re-enter the new password" autoComplete="new-password" />

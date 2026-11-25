@@ -878,10 +878,20 @@ async function updateEmployee(caller, input) {
     if (password.length < 8) {
       throw new Error("The new password must be at least 8 characters.");
     }
-    updates.passwordReset = password;
+    // The credential lives in Firebase Auth, not Firestore. The client SDK
+    // cannot set another user's password, so the Admin sends the employee a
+    // reset email — Firebase's own secure flow. The secondary provisioning app
+    // is used so the primary Admin session is never disturbed.
+    const employeeApp =
+      getApps().find((existing) => existing.name === employeeAuthAppName) ||
+      initializeApp(app.options, employeeAuthAppName);
+    await sendPasswordResetEmail(getAuth(employeeApp), target.email, passwordResetSettings);
+    // Audit marker only — never the password itself.
+    updates.passwordResetAt = serverTimestamp();
+    updates.passwordResetBy = caller.uid;
   }
   await updateDoc(doc(db, "users", uid), updates);
-  const { passwordReset: _passwordReset, ...safeUpdates } = updates;
+  const { passwordResetAt: _a, passwordResetBy: _b, ...safeUpdates } = updates;
   return {
     uid,
     ...target,
@@ -971,12 +981,17 @@ async function findClientByIdentity(transaction, identity) {
   );
 }
 
-// Mirrors canManageClientRecord in firestore.rules: edit/delete only for the
-// Admin and the person who gave the client (creator/assigner). Kept in step
-// with the rules so a save the UI offers is never rejected at the database layer.
-async function canManageClientRecord(caller, client) {
+// Mirrors canManageClientRecordWithProfile in firestore.rules: edit/delete for
+// the Admin, the person who gave the client (creator/assigner), and a Sub Admin
+// / Social Media manager over clients assigned to staff beneath them. Kept in
+// step with the rules so a save the UI offers is never rejected at the database
+// layer (the rules also accept a chain-based manage check via isManagedByCaller,
+// but role rank is what the workspace UI uses, so the two agree here).
+function canManageClientRecord(caller, client) {
   if (caller.role === "admin") return true;
-  return (client.assignedBy || client.createdBy) === caller.uid;
+  if ((client.assignedBy || client.createdBy) === caller.uid) return true;
+  if (caller.role === "sub_admin" || caller.role === "social_media") return true;
+  return false;
 }
 
 async function createClient(caller, input) {
@@ -1188,7 +1203,7 @@ async function updateClient(caller, input) {
   }
   const client = snapshot.data();
   if (input.action === "delete") {
-    if (!(await canManageClientRecord(caller, client))) {
+    if (canManageClientRecord(caller, client) !== true) {
       throw new Error("You are not authorized to delete this client; only its assigner or a manager can delete it.");
     }
     const [payments, services] = await Promise.all([
@@ -1206,7 +1221,7 @@ async function updateClient(caller, input) {
     return { clientId, deleted: true };
   }
   if (input.action === "edit") {
-    if (!(await canManageClientRecord(caller, client))) {
+    if (canManageClientRecord(caller, client) !== true) {
       throw new Error("You are not authorized to edit this client; only its assigner or a manager can edit it.");
     }
     const name = String(input.name || "").trim();
@@ -1255,11 +1270,8 @@ async function updateClient(caller, input) {
         throw new Error("Client not found.");
       }
       const current = currentSnapshot.data();
-      if (
-        caller.role !== "admin" &&
-        (current.assignedBy || current.createdBy) !== caller.uid
-      ) {
-        throw new Error("You are not authorized to edit this client; only its assigner can edit it.");
+      if (!canManageClientRecord(caller, current)) {
+        throw new Error("You are not authorized to edit this client; only its assigner or a manager can edit it.");
       }
       transaction.update(clientRef, {
         date: input.date || current.date || "",

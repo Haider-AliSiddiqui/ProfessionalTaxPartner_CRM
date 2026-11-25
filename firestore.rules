@@ -252,6 +252,13 @@ service cloud.firestore {
         && newData.diff(oldData).affectedKeys().hasOnly([
           'name', 'phone', 'role', 'status', 'managerUid', 'permissions', 'updatedAt'
         ])
+        // The Admin-only password reset writes an audit marker (passwordResetAt /
+        // passwordResetBy) instead of the password itself: Firebase Auth owns the
+        // credential, and no client may ever read or write it through Firestore.
+        && (!newData.diff(oldData).affectedKeys().hasAny(['passwordResetAt', 'passwordResetBy'])
+          || (myProfile().role == 'admin'
+            && newData.passwordResetAt is timestamp
+            && newData.passwordResetBy == request.auth.uid))
         && (!newData.diff(oldData).affectedKeys().hasAny(['role'])
           || (newData.role in directoryRoles().remove('admin')
             && roleRank(newData.role) > roleRank(myProfile().role)))
