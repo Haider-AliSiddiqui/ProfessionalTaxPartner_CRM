@@ -42,9 +42,21 @@ const employeeAuthAppName = "crm-employee-provisioning";
 // session, and the role-scoped record set is reused for a short window (see
 // CACHE_TTL_MS) so switching tabs paints immediately instead of waiting on
 // the network again.
-const CACHE_TTL_MS = 30000;
+// Five minutes instead of the previous 30s: every expiry used to force a full
+// re-download of every scoped collection, which is what made the dashboard
+// crawl as the record count grew. Writes keep the cache correct without the
+// network — each create/update/delete patches the cached rows in place (see
+// patchCachedRecords) and employee writes clear it outright, so the longer TTL
+// only delays picking up edits made by other users, not the user's own.
+const CACHE_TTL_MS = 5 * 60 * 1000;
 let profileCache = null;
 let recordsCache = null;
+// The dashboard fires several GETs at once (clients, services, payments,
+// employees) and every one of them calls loadRecords. The cache is only set
+// once the full read finishes, so before this in-flight dedupe each parallel
+// GET repeated the entire collection read — 4x the round-trips on first load,
+// which is what made the dashboard stall as the data grew.
+let recordsFetch = null;
 
 function clearCaches() {
   profileCache = null;
@@ -560,18 +572,31 @@ async function loadRecords(profile) {
   const cached = cachedRecords(profile);
   if (cached) return cached;
 
-  const assignmentProfiles = await getAssignableProfiles(profile);
-  const clients = await getClientRecords(profile, assignmentProfiles);
-  // The same profile document is read several times while assembling a scope
-  // (client reads, service scope, assignment targets). Awaiting each one in
-  // sequence doubled the perceived load time; the union keeps them concurrent.
-  const [services, payments] = await Promise.all([
-    getServices(profile, assignmentProfiles, clients),
-    getPayments(profile, clients, assignmentProfiles),
-  ]);
-  const value = { clients, services, payments, assignmentProfiles };
-  recordsCache = { uid: profile.uid, at: Date.now(), value };
-  return value;
+  // Deduplicate concurrent reads: while one full fetch is in flight, every
+  // other caller waits on the same promise instead of issuing the same queries
+  // again. The dashboard fires clients/services/payments/employees GETs
+  // together, and before this dedupe each of them repeated the whole
+  // collection read — four times the round-trips, which is what made the
+  // dashboard stall as the record count grew. A failed attempt clears the
+  // promise so a retry is possible.
+  if (recordsFetch) return recordsFetch;
+  recordsFetch = (async () => {
+    const assignmentProfiles = await getAssignableProfiles(profile);
+    const clients = await getClientRecords(profile, assignmentProfiles);
+    // The same profile document is read several times while assembling a scope
+    // (client reads, service scope, assignment targets). Awaiting each one in
+    // sequence doubled the perceived load time; the union keeps them concurrent.
+    const [services, payments] = await Promise.all([
+      getServices(profile, assignmentProfiles, clients),
+      getPayments(profile, clients, assignmentProfiles),
+    ]);
+    const value = { clients, services, payments, assignmentProfiles };
+    recordsCache = { uid: profile.uid, at: Date.now(), value };
+    return value;
+  })().finally(() => {
+    recordsFetch = null;
+  });
+  return recordsFetch;
 }
 
 async function getServices(profile, teamProfiles, clients) {

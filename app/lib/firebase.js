@@ -1,6 +1,6 @@
 import { getApps, initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { resetSessionCache } from "./session-cache.js";
 
@@ -28,7 +28,15 @@ const app =
   getApps().find((firebaseApp) => firebaseApp.name === appName) ||
   initializeApp(firebaseConfig, appName);
 const auth = getAuth(app);
-const db = getFirestore(app);
+// Persistent offline cache: every read is written to IndexedDB, so a page
+// refresh (or reopening the tab) paints instantly from the local copy and only
+// the documents that actually changed are re-downloaded. Without this the
+// whole scoped collection set was re-fetched on every reload, which is what
+// made refresh times grow with the data size. Multi-tab manager keeps the
+// cache consistent when the portal is open in more than one tab.
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
 const storage = getStorage(app);
 
 // Both the login screen and the portal dashboard used to subscribe to auth
